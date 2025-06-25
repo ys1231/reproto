@@ -22,7 +22,7 @@ def get_java_file_path(source_dir: str, java_class_name: str) -> str:
 
     Args:
         source_dir (str): JADX 的 'sources' 根目录。
-        java_class_name (str): Java 类的完全限定名称 (e.g., "com.truecaller.api.services.search.model.SearchResult").
+        java_class_name (str): Java 类的完全限定名称 (e.g., "com.example.messaging.v1.models.MessageData").
 
     Returns:
         str: 该 Java 文件的完整路径。
@@ -39,13 +39,13 @@ def get_proto_file_path(output_dir: str, package_name: str, proto_name: str) -> 
 
     Args:
         output_dir (str): .proto 文件的输出根目录。
-        package_name (str): .proto 的包名 (e.g., "com.truecaller.api.services.search.model").
+        package_name (str): .proto 的包名 (e.g., "com.example.messaging.v1.models").
         proto_name (str): .proto 的消息名 (e.g., "SearchResult").
 
     Returns:
         tuple[str, str]: 返回一个元组，包含：
-                         - 相对路径 (用于 import 语句, e.g., "com/truecaller/.../SearchResult.proto")
-                         - 完整写入路径 (e.g., "/path/to/output/com/truecaller/.../SearchResult.proto")
+                         - 相对路径 (用于 import 语句, e.g., "com/example/messaging/v1/models/MessageData.proto")
+                         - 完整写入路径 (e.g., "/path/to/output/com/example/messaging/v1/models/MessageData.proto")
     """
     path_parts = package_name.split('.')
     relative_dir = os.path.join(*path_parts)

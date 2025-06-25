@@ -34,7 +34,7 @@ def parse_arguments():
 示例:
   %(prog)s ./out_jadx/sources com.example.Model ./protos_generated
   %(prog)s ./out_jadx/sources com.example.Model ./output --log-dir ./my_logs
-  %(prog)s /path/to/jadx/sources com.truecaller.search.v1.models.SearchResult ./output
+  %(prog)s /path/to/jadx/sources com.example.messaging.v1.models.MessageData ./output
         """
     )
     

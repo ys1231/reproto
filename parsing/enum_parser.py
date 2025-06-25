@@ -30,7 +30,7 @@ class EnumParser:
         查找指定包路径下的所有枚举文件
         
         Args:
-            package_path: 包路径，如 com.truecaller.search.v1.models
+            package_path: 包路径，如 com.example.messaging.v1.models
             
         Returns:
             枚举类的完整类名列表
