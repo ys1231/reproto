@@ -1,0 +1,25 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "reproto"
+version = "0.1.0"
+description = "一个强大的逆向工程工具, 能够从任何使用Google Protobuf Lite的Android应用中自动重构出完整的.proto文件结构."
+readme = "README.md"
+license = "MIT"
+authors = ["ReProto Team <contact@reproto.dev>"]
+packages = [
+    {include = "core"},
+    {include = "generation"},
+    {include = "models"},
+    {include = "parsing"},
+    {include = "utils"}
+]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+loguru = ">=0.7.3"
+
+[tool.poetry.scripts]
+reproto = "main:main"

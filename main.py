@@ -18,16 +18,11 @@ import sys
 import argparse
 from pathlib import Path
 
-# 处理相对导入问题
-try:
-    from .core.reconstructor import ProtoReconstructor
-    from .utils.logger import setup_logger, get_logger
-except ImportError:
-    # 如果相对导入失败，尝试绝对导入
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from proto_reconstructor.core.reconstructor import ProtoReconstructor
-    from proto_reconstructor.utils.logger import setup_logger, get_logger
+# 导入项目模块
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from core.reconstructor import ProtoReconstructor
+from utils.logger import setup_logger, get_logger
 
 
 def parse_arguments():
