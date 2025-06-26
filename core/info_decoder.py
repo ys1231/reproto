@@ -29,12 +29,17 @@ class InfoDecoder:
     
     def __init__(self, java_source_analyzer=None):
         """
-        初始化解码器，设置字节码到Protobuf类型的映射表
+        初始化信息解码器
         
         Args:
-            java_source_analyzer: Java源码分析器，用于获取真实的字段类型
+            java_source_analyzer: Java源码分析器实例（可选）
         """
         self.logger = get_logger("info_decoder")
+        self.java_source_analyzer = java_source_analyzer
+        
+        # 导入JavaParser
+        from parsing.java_parser import JavaParser
+        self.java_parser = JavaParser()
         
         # Protobuf字段类型映射表
         # 键：字节码中的类型值，值：对应的protobuf字段类型
@@ -44,51 +49,62 @@ class InfoDecoder:
             2: 'int64',      # INT64  
             3: 'int32',      # INT32
             4: 'int32',      # INT32 (修正：4对应int32，不是bool)
+            5: 'int64',      # INT64 - 基于Models$Onboarded.userId_和phoneNumber_的分析
+            6: 'int32',      # INT32 - 基于Assistant$Payload.action_的分析
             7: 'bool',       # BOOL (修正：7对应bool)
             9: 'message',    # MESSAGE (嵌套消息)
             12: 'enum',      # ENUM (枚举类型)
-            27: 'message',   # REPEATED MESSAGE
-            39: 'int32',     # REPEATED INT32 (packed)
-            44: 'enum',      # PACKED ENUM
+            27: 'repeated_message',   # REPEATED MESSAGE (修正：27表示repeated message)
+            39: 'repeated_int32',     # REPEATED INT32 (packed)
+            44: 'repeated_enum',      # PACKED ENUM (修正：44表示repeated enum)
             50: 'map',       # Map字段 - 基于BulkSearchResult.contacts的分析
+            92: 'string',    # STRING - 基于Assistant$Payload.title_的分析
             520: 'string',   # UTF-8字符串
-            538: 'string',   # REPEATED STRING (Ț = 538)  
+            538: 'repeated_string',   # REPEATED STRING (Ț = 538)  
+            4100: 'int32',   # INT32 - 基于Assistant$Payload.action_的分析
+            4108: 'enum',    # ENUM - 基于Assistant$Payload.payloadType_的分析
+            4616: 'string',  # STRING - 基于Assistant$Payload.summary_的分析
         }
         
-        # Java源码分析器
-        self.java_source_analyzer = java_source_analyzer
-        
-        # 统计未知类型（用于持续改进）
-        self.unknown_types_stats = {}  # {byte_code: count}
+        # 统计未知字节码类型
+        self.unknown_types_stats = {}
     
-    def decode_message_info(self, class_name: str, info_string: str, objects: List[str]) -> Optional[MessageDefinition]:
+    def decode_message_info(self, class_name: str, info_string: str, objects: List[str], java_file_path=None) -> Optional[MessageDefinition]:
         """
-        解码消息信息的主入口方法
+        解码Protobuf消息信息
         
         Args:
             class_name: 完整的Java类名
             info_string: newMessageInfo中的字节码字符串
             objects: newMessageInfo中的对象数组
+            java_file_path: Java文件路径（用于提取字段标签）
             
         Returns:
             MessageDefinition对象 或 None（如果解码失败）
         """
         try:
-            # 1. 解码字节码字符串为字节数组
+            # 解码字节码字符串
             bytes_data = self._decode_info_string(info_string)
-            if not bytes_data:
+            if bytes_data is None:
                 return None
             
-            # 2. 创建消息定义基础结构
+            # 创建消息定义
             message_def = self._create_message_definition(class_name)
             
-            # 3. 解析字段信息
-            self._parse_fields(message_def, bytes_data, objects)
+            # 提取字段标签（如果有Java文件路径）
+            field_tags = None
+            if java_file_path:
+                field_tags = self.java_parser.extract_field_tags(java_file_path)
+                if field_tags:
+                    self.logger.info(f"    🏷️ 从Java源码提取到 {len(field_tags)} 个字段标签")
+            
+            # 解析字段信息
+            self._parse_fields(message_def, bytes_data, objects, field_tags)
             
             return message_def
             
         except Exception as e:
-            self.logger.error(f"❌ 解码消息信息失败 {class_name}: {e}")
+            self.logger.error(f"❌ 解码消息信息失败: {e}")
             return None
     
     def _decode_info_string(self, info_string: str) -> Optional[List[int]]:
@@ -102,12 +118,27 @@ class InfoDecoder:
             字节数组 或 None（如果解码失败）
         """
         try:
-            # 解码Unicode转义序列并转换为字节数组
-            decoded = info_string.encode('latin-1', 'backslashreplace').decode('unicode-escape')
-            return [ord(c) for c in decoded]
+            # 首先解码Unicode转义序列（如\u0000）但保持Unicode字符的原始值
+            # 使用raw_unicode_escape来避免将Unicode字符编码为UTF-8
+            decoded_string = info_string.encode('raw_unicode_escape').decode('raw_unicode_escape')
+            return [ord(c) for c in decoded_string]
         except Exception as e:
-            self.logger.error(f"❌ 解码字节码字符串失败: {e}")
-            return None
+            try:
+                # 如果包含转义序列，手动处理
+                import re
+                def replace_unicode_escape(match):
+                    return chr(int(match.group(1), 16))
+                
+                # 替换\uXXXX格式的转义序列
+                decoded_string = re.sub(r'\\u([0-9a-fA-F]{4})', replace_unicode_escape, info_string)
+                return [ord(c) for c in decoded_string]
+            except Exception as e2:
+                try:
+                    # 最后的备用方法：直接使用ord值
+                    return [ord(c) for c in info_string]
+                except Exception as e3:
+                    self.logger.error(f"❌ 解码字节码字符串失败: {e}, 方法2: {e2}, 方法3: {e3}")
+                    return None
     
     def _create_message_definition(self, class_name: str) -> MessageDefinition:
         """
@@ -130,7 +161,7 @@ class InfoDecoder:
             full_name=class_name
         )
     
-    def _parse_fields(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str]) -> None:
+    def _parse_fields(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str], field_tags: Optional[dict] = None) -> None:
         """
         解析字段信息的主调度方法
         
@@ -138,6 +169,7 @@ class InfoDecoder:
             message_def: 消息定义对象
             bytes_data: 解码后的字节数组
             objects: 对象数组
+            field_tags: 字段标签映射 {field_name: tag}
         """
         try:
             # 检查是否包含oneof字段（通过查找'<'字符，ord=60）
@@ -146,12 +178,12 @@ class InfoDecoder:
             if oneof_positions:
                 self._parse_oneof_fields(message_def, bytes_data, objects, oneof_positions)
             else:
-                self._parse_regular_fields(message_def, bytes_data, objects)
+                self._parse_regular_fields(message_def, bytes_data, objects, field_tags)
                 
         except Exception as e:
             self.logger.error(f"❌ 解析字段失败: {e}")
     
-    def _parse_regular_fields(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str]) -> None:
+    def _parse_regular_fields(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str], field_tags: Optional[dict] = None) -> None:
         """
         解析常规字段（非oneof字段）
         
@@ -159,15 +191,266 @@ class InfoDecoder:
             message_def: 消息定义对象
             bytes_data: 字节码数据
             objects: 对象数组
+            field_tags: 字段标签映射 {field_name: tag}
         """
         # 跳过前10个字节的元数据
         field_start = 10
+        object_index = 0
+        
+        self.logger.info(f"    📊 开始解析字段，字节码长度: {len(bytes_data)}, objects数组长度: {len(objects)}")
+        self.logger.info(f"    📊 完整字节码数据: {[f'{b:02x}' for b in bytes_data]}")
+        self.logger.info(f"    📊 Objects数组: {objects}")
+        
+        # 如果有字段标签，优先使用Java源码信息
+        if field_tags:
+            self.logger.info(f"    🏷️ 使用Java源码字段标签: {field_tags}")
+            self._parse_fields_with_java_tags(message_def, bytes_data, objects, field_tags)
+        else:
+            # 回退到字节码解析
+            self.logger.info(f"    🔍 回退到字节码解析")
+            self._parse_fields_from_bytecode(message_def, bytes_data, objects, field_start)
+        
+        self.logger.info(f"    📊 字段解析完成，共解析 {len(message_def.fields)} 个字段")
+    
+    def _parse_fields_with_java_tags(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str], field_tags: dict) -> None:
+        """
+        使用Java源码提取的字段标签解析字段
+        
+        Args:
+            message_def: 消息定义对象
+            bytes_data: 字节码数据
+            objects: 对象数组
+            field_tags: Java源码提取的字段标签映射
+        """
+        for field_name_raw, field_tag in field_tags.items():
+            # 清理字段名
+            field_name = self._clean_field_name(field_name_raw)
+            
+            # 从Java源码获取字段类型
+            # 首先尝试作为枚举类型获取
+            java_type = self._get_real_field_type_from_source(field_name_raw, 'enum')
+            if not java_type:
+                # 如果枚举类型获取失败，再尝试作为消息类型获取
+                java_type = self._get_real_field_type_from_source(field_name_raw, 'message')
+            if java_type:
+                # 使用Java源码类型，直接处理原始Java类型
+                if java_type.startswith('Internal.ProtobufList<') and java_type.endswith('>'):
+                    # Internal.ProtobufList<Contact> -> Contact (repeated)
+                    element_type = java_type[len('Internal.ProtobufList<'):-1]
+                    field_type_name = self._convert_java_to_proto_type(element_type)
+                    rule = 'repeated'
+                elif java_type.startswith('MapFieldLite<') and java_type.endswith('>'):
+                    # MapFieldLite<String, Contact> -> map<string, Contact>
+                    field_type_name = self._convert_java_to_proto_type(java_type)
+                    rule = 'optional'
+                elif java_type == 'Internal.IntList':
+                    # Internal.IntList -> 需要从setter方法获取真正的枚举类型
+                    if self.java_source_analyzer:
+                        enum_type = self.java_source_analyzer._get_enum_type_from_list_setter(field_name_raw.rstrip('_'))
+                        if enum_type:
+                            # 获取到枚举类型，转换为简单类名
+                            field_type_name = self._convert_java_to_proto_type(enum_type)
+                            rule = 'repeated'
+                        else:
+                            # 如果获取不到，回退到默认处理
+                            field_type_name = 'int32'
+                            rule = 'repeated'
+                    else:
+                        field_type_name = 'int32'
+                        rule = 'repeated'
+                else:
+                    # 普通类型 - 但需要检查是否为枚举类型
+                    if java_type in ['int', 'long', 'short', 'byte'] and self.java_source_analyzer:
+                        # 对于基础整数类型，检查是否有对应的枚举setter方法
+                        enum_type = self.java_source_analyzer._get_type_from_setter(field_name_raw.rstrip('_'))
+                        if enum_type:
+                            # 找到枚举setter，使用枚举类型
+                            field_type_name = self._convert_java_to_proto_type(enum_type)
+                            rule = 'optional'
+                        else:
+                            # 没有枚举setter，使用基础类型
+                            field_type_name = self._convert_java_to_proto_type(java_type)
+                            rule = 'optional'
+                    else:
+                        # 非基础整数类型，正常处理
+                        field_type_name = self._convert_java_to_proto_type(java_type)
+                        # 判断是否为repeated类型
+                        if (java_type.startswith('Internal.ProtobufList<') or 
+                            java_type.startswith('List<') or
+                            java_type.startswith('ArrayList<')):
+                            rule = 'repeated'
+                        else:
+                            rule = 'optional'
+                
+                self.logger.info(f"    🔍 从Java源码获取类型: {field_name_raw} -> {java_type} -> {field_type_name} (rule: {rule})")
+            else:
+                # 使用默认类型
+                field_type_name = 'string'
+                rule = 'optional'
+                self.logger.info(f"    🔍 使用默认类型: {field_name_raw} -> {field_type_name}")
+            
+            # 记录字段信息
+            self.logger.info(f"    📝 字段信息: name={field_name}, type={field_type_name}, tag={field_tag}")
+            
+            # 特殊情况处理：根据字段名修正类型
+            field_type_name = self._refine_field_type(field_name, field_type_name, 0)  # 使用0作为占位符
+            
+            # 确定字段规则（基于Java类型判断是否为repeated）
+            # 已经在上面确定了rule，这里不需要重复处理
+            
+            # 创建字段定义
+            field_def = FieldDefinition(
+                name=field_name,
+                type_name=field_type_name,
+                tag=field_tag,
+                rule=rule
+            )
+            
+            message_def.fields.append(field_def)
+            self.logger.info(f"    ✅ 添加字段: {field_name} = {field_tag} ({rule} {field_type_name})")
+    
+    def _determine_field_rule(self, field_type_byte: int, field_type_name: str = None, java_type: str = None) -> str:
+        """
+        根据字节码、字段类型和Java类型确定字段规则
+        
+        Args:
+            field_type_byte: 字段类型字节
+            field_type_name: 字段类型名（可选）
+            java_type: Java源码中的类型（可选）
+            
+        Returns:
+            字段规则：'optional' 或 'repeated'
+        """
+        # map类型永远不使用repeated规则，因为map本身就表示键值对集合
+        if field_type_name and field_type_name.startswith('map<'):
+            return 'optional'
+        
+        # 检查Java源码类型是否为集合类型
+        if java_type:
+            if (java_type.startswith('Internal.ProtobufList<') or 
+                java_type.startswith('List<') or
+                java_type.startswith('ArrayList<') or
+                java_type.startswith('java.util.List<')):
+                return 'repeated'
+        
+        # 检查字段类型名是否包含repeated标识
+        if field_type_name and field_type_name.startswith('repeated_'):
+            return 'repeated'
+        
+        # repeated类型的字节码
+        repeated_types = {27, 39, 44, 538}  # repeated_message, repeated_int32, repeated_enum, repeated_string
+        return 'repeated' if field_type_byte in repeated_types else 'optional'
+    
+    def _infer_field_type_from_bytecode(self, field_name_raw: str, field_type: str) -> str:
+        """
+        从Java源码推断字段类型
+        
+        Args:
+            field_name_raw: 原始字段名（带下划线）
+            field_type: 字节码推断的字段类型
+            
+        Returns:
+            推断的字段类型
+        """
+        # 首先尝试从Java源码获取真实类型
+        real_type = self._get_real_field_type_from_source(field_name_raw)
+        if real_type:
+            self.logger.info(f"    🔍 从Java源码获取类型: {field_name_raw} -> {real_type} -> {self._convert_java_to_proto_type(real_type)}")
+            return self._convert_java_to_proto_type(real_type)
+        
+        # 如果源码分析失败，使用字节码类型
+        self.logger.info(f"    🔍 使用字节码类型: {field_name_raw} -> {field_type}")
+        return field_type
+    
+    def _convert_java_to_proto_type(self, java_type: str) -> str:
+        """
+        将Java类型转换为Protobuf类型
+        
+        Args:
+            java_type: Java类型字符串
+            
+        Returns:
+            转换后的Protobuf类型
+        """
+        if not java_type:
+            return 'string'
+        
+        # 处理Internal.ProtobufList<T>类型
+        if java_type.startswith('Internal.ProtobufList<') and java_type.endswith('>'):
+            element_type = java_type[len('Internal.ProtobufList<'):-1]
+            # 递归处理元素类型
+            return self._convert_java_to_proto_type(element_type)
+        
+        # 处理MapFieldLite<K, V>类型，返回map<k, v>格式
+        if java_type.startswith('MapFieldLite<') and java_type.endswith('>'):
+            inner_types = java_type[len('MapFieldLite<'):-1]
+            # 解析键值类型
+            parts = self._parse_generic_types(inner_types)
+            if len(parts) == 2:
+                key_type = self._convert_java_to_proto_type(parts[0].strip())
+                value_type = self._convert_java_to_proto_type(parts[1].strip())
+                return f"map<{key_type}, {value_type}>"
+        
+        # 处理List<T>类型
+        if java_type.startswith('List<') and java_type.endswith('>'):
+            element_type = java_type[len('List<'):-1]
+            return self._convert_java_to_proto_type(element_type)
+        
+        # 处理Internal.IntList类型（通常对应枚举列表）
+        if java_type == 'Internal.IntList':
+            # 这种情况需要从上下文获取真正的枚举类型
+            # 返回特殊标记，让调用方进行进一步处理
+            return 'Internal.IntList'
+        
+        # 基础类型映射
+        basic_types = {
+            'int': 'int32',
+            'long': 'int64', 
+            'float': 'float',
+            'double': 'double',
+            'boolean': 'bool',
+            'String': 'string',
+            'java.lang.String': 'string',
+            'java.lang.Integer': 'int32',
+            'java.lang.Long': 'int64',
+            'java.lang.Float': 'float',
+            'java.lang.Double': 'double',
+            'java.lang.Boolean': 'bool',
+            'byte[]': 'bytes',
+            'ByteString': 'bytes',
+            'com.google.protobuf.ByteString': 'bytes',
+        }
+        
+        # 检查是否为基础类型
+        if java_type in basic_types:
+            return basic_types[java_type]
+        
+        # 如果是完整的类名，提取简单类名
+        if '.' in java_type:
+            simple_name = java_type.split('.')[-1]
+            return simple_name
+        
+        # 默认返回原类型名
+        return java_type
+    
+    def _parse_fields_from_bytecode(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str], field_start: int) -> None:
+        """
+        从字节码解析字段（原有的解析逻辑）
+        
+        Args:
+            message_def: 消息定义对象
+            bytes_data: 字节码数据
+            objects: 对象数组
+            field_start: 字段数据开始位置
+        """
         object_index = 0
         
         # 每次处理2个字节：[字段标签, 字段类型]
         for i in range(field_start, len(bytes_data) - 1, 2):
             field_tag = bytes_data[i]
             field_type_byte = bytes_data[i + 1]
+            
+            self.logger.info(f"    🔍 处理字段 #{(i-field_start)//2 + 1}: tag={field_tag}, type_byte={field_type_byte} (0x{field_type_byte:02x})")
             
             # 查找类型映射，对未知类型进行智能处理
             if field_type_byte not in self.type_mapping:
@@ -180,20 +463,24 @@ class InfoDecoder:
                 self.logger.info(f"    🔍 推断未知类型: {field_type_byte} -> {field_type}")
             else:
                 field_type = self.type_mapping[field_type_byte]
+                self.logger.info(f"    ✅ 已知类型: {field_type_byte} -> {field_type}")
             
             # 从对象数组获取字段信息
             field_info = self._extract_field_info(objects, object_index, field_type)
             if not field_info:
+                self.logger.warning(f"    ⚠️  无法获取字段信息，跳过字段 tag={field_tag}")
                 continue
                 
             field_name, field_type_name, new_object_index = field_info
             object_index = new_object_index
             
+            self.logger.info(f"    📝 字段信息: name={field_name}, type={field_type_name}, tag={field_tag}")
+            
             # 特殊情况处理：根据字段名修正类型
             field_type_name = self._refine_field_type(field_name, field_type_name, field_type_byte)
             
             # 确定字段规则
-            rule = self._determine_field_rule(field_type_byte)
+            rule = self._determine_field_rule(field_type_byte, field_type_name, None)
             
             # 创建字段定义
             field_def = FieldDefinition(
@@ -204,6 +491,7 @@ class InfoDecoder:
             )
             
             message_def.fields.append(field_def)
+            self.logger.info(f"    ✅ 添加字段: {field_name} = {field_tag} ({field_type_name})")
     
     def _extract_field_info(self, objects: List[str], object_index: int, field_type: str) -> Optional[tuple]:
         """
@@ -224,14 +512,27 @@ class InfoDecoder:
         
         # 获取字段名
         field_name_raw = objects[object_index]
+        
+        # 跳过内部状态字段（protobuf内部使用的字段，不是实际的proto字段）
+        if self._is_internal_field(field_name_raw):
+            self.logger.info(f"    ⏭️ 跳过内部字段: {field_name_raw}")
+            object_index += 1
+            # 递归调用获取下一个字段
+            return self._extract_field_info(objects, object_index, field_type)
+        
         field_name = self._to_snake_case(field_name_raw.rstrip('_'))
         object_index += 1
         
         # 确定字段类型名
         field_type_name = field_type  # 默认使用基础类型
         
+        # 处理repeated类型：repeated_message -> message，但保留repeated信息
+        if field_type.startswith('repeated_'):
+            base_field_type = field_type[9:]  # 移除 'repeated_' 前缀
+            field_type_name = base_field_type
+        
         # 对于消息类型、枚举类型和map类型，检查objects数组中是否有具体的类型引用
-        if field_type in ['message', 'enum', 'map']:
+        if field_type_name in ['message', 'enum', 'map'] or field_type in ['repeated_message', 'repeated_enum']:
             if object_index < len(objects):
                 next_obj = objects[object_index]
                 if self._is_type_reference(next_obj):
@@ -246,16 +547,16 @@ class InfoDecoder:
                     object_index += 1
                 else:
                     # 没有显式引用，优先从Java源码中获取真实类型
-                    real_type = self._get_real_field_type_from_source(field_name_raw, field_type)
+                    real_type = self._get_real_field_type_from_source(field_name_raw, field_type_name)
                     if real_type:
                         field_type_name = real_type
                         self.logger.info(f"    🔍 源码获取类型: {field_name} -> {field_type_name}")
                     else:
                         # 如果源码分析失败，才进行智能推断
-                        if field_type == 'enum':
+                        if field_type_name == 'enum':
                             field_type_name = self._infer_enum_type_from_field_name(field_name_raw)
                             self.logger.info(f"    🔍 推断枚举类型: {field_name} -> {field_type_name}")
-                        elif field_type == 'message':
+                        elif field_type_name == 'message':
                             field_type_name = self._infer_message_type_from_field_name(field_name_raw)
                             self.logger.info(f"    🔍 推断消息类型: {field_name} -> {field_type_name}")
                         elif field_type == 'map':
@@ -263,16 +564,16 @@ class InfoDecoder:
                             self.logger.info(f"    🔍 推断map类型: {field_name} -> {field_type_name}")
             else:
                 # objects数组已结束，优先从Java源码中获取真实类型
-                real_type = self._get_real_field_type_from_source(field_name_raw, field_type)
+                real_type = self._get_real_field_type_from_source(field_name_raw, field_type_name)
                 if real_type:
                     field_type_name = real_type
                     self.logger.info(f"    🔍 源码获取类型: {field_name} -> {field_type_name}")
                 else:
                     # 如果源码分析失败，才进行智能推断
-                    if field_type == 'enum':
+                    if field_type_name == 'enum':
                         field_type_name = self._infer_enum_type_from_field_name(field_name_raw)
                         self.logger.info(f"    🔍 推断枚举类型: {field_name} -> {field_type_name}")
-                    elif field_type == 'message':
+                    elif field_type_name == 'message':
                         field_type_name = self._infer_message_type_from_field_name(field_name_raw)
                         self.logger.info(f"    🔍 推断消息类型: {field_name} -> {field_type_name}")
                     elif field_type == 'map':
@@ -281,31 +582,34 @@ class InfoDecoder:
         
         return field_name, field_type_name, object_index
 
-    def _get_real_field_type_from_source(self, field_name_raw: str, expected_type: str) -> Optional[str]:
+    def _get_real_field_type_from_source(self, field_name_raw: str, expected_type: str = 'message') -> Optional[str]:
         """
-        从Java源码中获取字段的真实类型
+        从Java源码中获取字段的真实Java类型（原始类型，不转换）
         
         Args:
-            field_name_raw: 原始字段名（如 id_）
-            expected_type: 期望的基础类型（message 或 enum）
+            field_name_raw: 原始字段名（如 contacts_）
+            expected_type: 期望的基础类型（message、enum 或 map）
             
         Returns:
-            真实的类型名，如果无法获取则返回None
+            原始的Java类型名，如果无法获取则返回None
         """
         if not self.java_source_analyzer:
             return None
             
         try:
-            # 调用Java源码分析器获取真实类型
+            # 调用Java源码分析器获取真实Java类型（原始类型）
             real_type = self.java_source_analyzer.get_field_type(field_name_raw, expected_type)
-            return real_type
+            if real_type:
+                self.logger.info(f"    🔍 源码分析成功: {field_name_raw} -> {real_type}")
+                return real_type  # 返回原始Java类型
+            return None
         except Exception as e:
             self.logger.warning(f"    ⚠️  源码分析失败: {e}")
             return None
 
     def _infer_message_type_from_field_name(self, field_name_raw: str) -> str:
         """
-        根据字段名智能推断消息类型名（通用算法，无硬编码）
+        根据字段名智能推断消息类型名（通用算法）
         
         Args:
             field_name_raw: 原始字段名（如 businessProfile_）
@@ -313,40 +617,106 @@ class InfoDecoder:
         Returns:
             推断出的消息类型名
         """
+        # 优先从Java源码中获取真实类型
+        if self.java_source_analyzer:
+            real_type = self.java_source_analyzer.get_field_type(field_name_raw, 'message')
+            if real_type and real_type not in ['string', 'int32', 'int64', 'bool', 'float', 'double', 'bytes']:
+                return real_type
+        
         # 移除末尾的下划线
         clean_name = field_name_raw.rstrip('_')
         
         if not clean_name:
             return 'UnknownMessage'
         
+        # 检查是否为基础字段类型
+        if self._is_likely_basic_field(clean_name):
+            # 对于基础字段，返回相应的protobuf基础类型
+            return self._get_basic_field_proto_type(clean_name)
+        
         # 将camelCase转换为PascalCase
         type_name = self._camel_to_pascal_case(clean_name)
         
         # 通用推断规则（无硬编码）
-        # 1. 如果字段名以某些常见后缀结尾，进行相应处理
-        if clean_name.lower().endswith('profile'):
-            # businessProfile -> Business
-            base_name = clean_name[:-7]  # 移除'profile'
-            return self._camel_to_pascal_case(base_name) if base_name else type_name
+        # 1. 处理复数形式
+        if clean_name.lower().endswith('s') and len(clean_name) > 2:
+            # contacts -> Contact, phones -> Phone
+            singular = clean_name[:-1]
+            return self._camel_to_pascal_case(singular)
+        
+        # 2. 处理常见后缀
+        elif clean_name.lower().endswith('profile'):
+            # businessProfile -> BusinessProfile，保持原样
+            return type_name
         elif clean_name.lower().endswith('info'):
             # spamInfo -> SpamInfo，保持原样
             return type_name
-        elif clean_name.lower().endswith('stats'):
-            # commentsStats -> CommentsStats，保持原样
-            return type_name
         elif clean_name.lower().endswith('data'):
-            # senderIdData -> SenderIdData，保持原样
+            # userData -> UserData，保持原样
             return type_name
-        elif clean_name.lower().endswith('id'):
-            # 对于id字段，有多种可能的类型模式
-            # 1. 简单的Id类型：id -> Id
-            # 2. 数据类型：id -> IdData  
-            # 3. 具体的Id类型：contactId -> ContactIdData
-            # 由于无法确定具体类型，保持基础推断，让依赖发现来解决
-            return type_name + 'Data'
+        elif clean_name.lower().endswith('config'):
+            # systemConfig -> SystemConfig，保持原样
+            return type_name
+        
+        # 3. 默认处理
         else:
-            # 默认：直接转换为PascalCase
             return type_name
+
+    def _is_likely_basic_field(self, field_name: str) -> bool:
+        """
+        检查字段名是否可能是基础类型字段
+        
+        Args:
+            field_name: 清理后的字段名
+            
+        Returns:
+            是否可能是基础类型
+        """
+        # 常见的基础字段模式
+        basic_patterns = [
+            'tags',       # 标签数组
+            'ids',        # ID数组
+            'values',     # 值数组
+            'names',      # 名称数组
+            'urls',       # URL数组
+            'emails',     # 邮箱数组
+            'phones',     # 电话号码数组（如果是字符串）
+            'addresses',  # 地址数组（如果是字符串）
+            'keywords',   # 关键词数组
+            'categories', # 分类数组
+            'labels',     # 标签数组
+        ]
+        
+        field_lower = field_name.lower()
+        
+        # 检查是否匹配基础模式
+        for pattern in basic_patterns:
+            if field_lower == pattern or field_lower.endswith(pattern):
+                return True
+        
+        return False
+
+    def _get_basic_field_proto_type(self, field_name: str) -> str:
+        """
+        获取基础字段的protobuf类型
+        
+        Args:
+            field_name: 字段名
+            
+        Returns:
+            protobuf基础类型
+        """
+        field_lower = field_name.lower()
+        
+        # 根据字段名推断基础类型
+        if field_lower in ['tags', 'names', 'urls', 'emails', 'keywords', 'categories', 'labels']:
+            return 'string'  # repeated string
+        elif field_lower in ['ids', 'values'] and 'id' in field_lower:
+            return 'int64'   # repeated int64
+        elif field_lower in ['counts', 'numbers', 'amounts']:
+            return 'int32'   # repeated int32
+        else:
+            return 'string'  # 默认为string
 
     def _camel_to_pascal_case(self, camel_str: str) -> str:
         """
@@ -406,20 +776,6 @@ class InfoDecoder:
         # 3. 默认处理
         else:
             return type_name
-    
-    def _determine_field_rule(self, field_type_byte: int) -> str:
-        """
-        根据字节码确定字段规则
-        
-        Args:
-            field_type_byte: 字段类型字节
-            
-        Returns:
-            字段规则：'optional' 或 'repeated'
-        """
-        # repeated类型的字节码
-        repeated_types = {27, 39, 44, 538}  # repeated_message, repeated_int32, packed_enum, repeated_string
-        return 'repeated' if field_type_byte in repeated_types else 'optional'
     
     def _is_type_reference(self, obj: str) -> bool:
         """
@@ -646,36 +1002,8 @@ class InfoDecoder:
         Returns:
             对应的proto类型
         """
-        # 基础类型映射
-        type_mapping = {
-            'boolean': 'bool',
-            'byte': 'int32',
-            'short': 'int32', 
-            'int': 'int32',
-            'long': 'int64',
-            'float': 'float',
-            'double': 'double',
-            'String': 'string',
-            'ByteString': 'bytes',
-        }
-        
-        # 直接映射
-        if java_type in type_mapping:
-            return type_mapping[java_type]
-        
-        # 处理复杂类型
-        if java_type.startswith('MapFieldLite<'):
-            return 'map'
-        elif java_type.startswith('Internal.ProtobufList<') or java_type.startswith('List<'):
-            return 'message'  # repeated message
-        elif java_type.endswith('[]'):
-            return 'message'  # repeated
-        elif '.' in java_type and java_type.split('.')[-1][0].isupper():
-            # 看起来像是类名，可能是message或enum
-            return 'message'  # 默认为message，具体类型由其他逻辑确定
-        
-        # 默认返回string
-        return 'string'
+        # 使用内部的类型转换方法
+        return self._convert_java_to_proto_type(java_type)
     
     def _analyze_unknown_type_by_wire_type(self, wire_type: int, objects: List[str], object_index: int, field_type_byte: int) -> str:
         """
@@ -823,4 +1151,83 @@ class InfoDecoder:
         s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', camel_str)
         # 处理小写字母后跟大写字母：userId -> user_Id
         s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-        return s2.lower() 
+        return s2.lower()
+
+    def _is_internal_field(self, field_name_raw: str) -> bool:
+        """
+        判断是否为protobuf内部字段（不是实际的proto字段）
+        
+        Args:
+            field_name_raw: 原始字段名
+            
+        Returns:
+            True如果是内部字段，False如果是实际字段
+        """
+        # 移除末尾的下划线进行判断
+        clean_name = field_name_raw.rstrip('_').lower()
+        
+        # protobuf内部字段模式
+        internal_patterns = [
+            'bitfield0',    # bitField0_ - 用于标记optional字段的位掩码
+            'bitfield1',    # bitField1_ - 多个位掩码字段
+            'bitfield2',    # bitField2_
+            'bitfield',     # 通用位字段模式
+            'memoizedhashcode',  # memoizedHashCode_ - 缓存的hash值
+            'memoizedsize',      # memoizedSize_ - 缓存的大小
+            'unknownfields'      # unknownFields_ - 未知字段存储
+        ]
+        
+        # 检查是否匹配内部字段模式
+        for pattern in internal_patterns:
+            if clean_name == pattern or clean_name.startswith(pattern):
+                return True
+        
+        return False
+
+    def _clean_field_name(self, field_name_raw: str) -> str:
+        """
+        清理字段名并转换为snake_case格式
+        
+        Args:
+            field_name_raw: 原始字段名
+            
+        Returns:
+            清理后的字段名
+        """
+        return self._to_snake_case(field_name_raw.rstrip('_'))
+
+    def _parse_generic_types(self, type_params: str) -> List[str]:
+        """
+        解析泛型类型参数
+        
+        Args:
+            type_params: 泛型参数字符串，如 "String, Contact" 或 "Map<String, Object>, List<Item>"
+            
+        Returns:
+            解析后的类型列表
+        """
+        if not type_params:
+            return []
+        
+        result = []
+        current = ""
+        bracket_count = 0
+        
+        for char in type_params:
+            if char == '<':
+                bracket_count += 1
+                current += char
+            elif char == '>':
+                bracket_count -= 1
+                current += char
+            elif char == ',' and bracket_count == 0:
+                # 只有在最外层的逗号才作为分隔符
+                result.append(current.strip())
+                current = ""
+            else:
+                current += char
+        
+        if current.strip():
+            result.append(current.strip())
+        
+        return result 

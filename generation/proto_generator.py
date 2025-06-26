@@ -3,6 +3,7 @@ Protobuf文件生成器
 
 根据解析出的消息定义生成标准的.proto文件
 支持完整的Protobuf语法，包括包声明、导入、Java选项和消息定义
+集成Google Protobuf Well-Known Types支持
 
 Author: AI Assistant
 """
@@ -257,9 +258,13 @@ class ProtoGenerator:
         if not field.type_name:
             return None
             
-        # 跳过基础类型
-        basic_types = {'string', 'int32', 'int64', 'bool', 'float', 'double', 'bytes', 'enum', 'message'}
-        if field.type_name in basic_types:
+        # 检查基础类型
+        basic_proto_types = {
+            'string', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
+            'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'float', 'double', 'bytes'
+        }
+        
+        if field.type_name in basic_proto_types:
             return None
         
         # 处理map类型：map<string, Contact> -> 提取值类型Contact
@@ -273,10 +278,15 @@ class ProtoGenerator:
                 value_type = value_type.strip()
                 
                 # 只处理值类型的导入（键类型通常是基础类型）
-                if value_type not in basic_types:
+                if value_type not in basic_proto_types:
                     full_class_name = self._resolve_full_class_name(value_type, current_package, all_messages)
                     if full_class_name:
                         return self._class_name_to_import_path(full_class_name)
+            return None
+        
+        # 跳过通用类型标识符
+        generic_types = {'enum', 'message'}
+        if field.type_name in generic_types:
             return None
         
         # 解析完整类名
@@ -297,8 +307,18 @@ class ProtoGenerator:
             all_messages: 所有消息定义
             
         Returns:
-            完整的类名
+            完整的类名，如果是基础类型则返回None
         """
+        # 检查是否为基础类型
+        basic_types = {
+            'string', 'int', 'long', 'boolean', 'bool', 'float', 'double', 'bytes',
+            'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
+            'fixed32', 'fixed64', 'sfixed32', 'sfixed64'
+        }
+        
+        if type_name in basic_types:
+            return None
+        
         # 如果是完整的类名，直接返回
         if '.' in type_name:
             return type_name

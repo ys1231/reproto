@@ -10,64 +10,40 @@
 - 🔄 **递归依赖**: 自动发现和处理所有依赖的消息和枚举类型
 - 📦 **完整支持**: 支持oneof、repeated、map、枚举等所有Protobuf特性
 - 🌐 **通用性**: 适用于任何Android应用，无需硬编码映射
-- 🚀 **高效处理**: 智能队列管理，避免重复处理
-- 🧠 **智能推断**: 从Java源码直接读取类型信息，确保100%准确性
+- 🧠 **智能推断**: 从Java源码直接读取类型信息，确保高准确性
 - 📝 **标准输出**: 严格遵循Google Proto Style Guide
-- 📊 **结构化日志**: 基于loguru的专业日志系统
 
 ## 🛠️ 安装
 
-### 方法1：直接运行
 ```bash
 # 克隆项目
-git clone git@github.com:ys1231/reproto.git
+git clone https://github.com/ys1231/reproto.git
 cd reproto
 
 # 安装依赖
 pip install -r requirements.txt
-
-# 运行
-python main.py <java_sources_dir> <root_class> <output_dir>
-```
-
-### 方法2：安装为包
-```bash
-# 安装到系统
-pip install -e .
-
-# 使用命令行工具
-reproto <java_sources_dir> <root_class> <output_dir>
 ```
 
 ## 📖 使用方法
 
 ### 基本用法
 ```bash
-python main.py ./out_jadx/sources com.example.Model ./protos_generated
-```
-
-### 完整参数
-```bash
-python main.py <java_sources_dir> <root_class> <output_dir> [--log-dir LOG_DIR] [--help]
+python main.py <java_sources_dir> <root_class> <output_dir> [--verbose]
 ```
 
 ### 参数说明
 - `java_sources_dir`: JADX反编译的Java源码目录路径
 - `root_class`: 要重构的根类完整类名（如：com.example.Model）
 - `output_dir`: 生成的proto文件输出目录路径
-- `--log-dir`: 日志文件输出目录（默认：./logs）
-- `--help`: 显示帮助信息
+- `--verbose`: 显示详细处理信息
 
 ### 示例
 ```bash
-# 重构示例消息应用的数据模型
-python main.py ./out_jadx/sources com.example.messaging.v1.models.MessageData ./protos_generated
+# 重构消息应用的数据模型
+python main.py ./out_jadx/sources com.example.messaging.v1.models.MessageData ./protos_generated --verbose
 
-# 指定日志目录
-python main.py ./out_jadx/sources com.example.Model ./output --log-dir ./my_logs
-
-# 重构其他应用的模型
-python main.py /path/to/jadx/sources com.myapp.data.UserProfile ./output
+# 重构内部类
+python main.py ./out_jadx/sources 'com.truecaller.accountonboarding.v1.Models$Onboarded' ./output --verbose
 ```
 
 ## 🔍 工作原理
@@ -77,7 +53,6 @@ python main.py /path/to/jadx/sources com.myapp.data.UserProfile ./output
 2. **依赖发现**: 递归分析Java文件中的类型引用
 3. **智能推断**: 基于字段名和对象数组推断枚举和消息类型
 4. **源码分析**: 直接从Java源码读取真实的字段类型声明
-5. **标准生成**: 生成符合Protobuf规范的.proto文件
 
 ### 解析流程
 ```
@@ -98,22 +73,17 @@ reproto/
 ├── generation/                 # 生成模块
 │   └── proto_generator.py      # Proto文件生成器
 ├── models/                     # 数据模型
-
+└── utils/                      # 工具函数
 ```
 
-## 工作流程
-
-1. 使用JADX反编译Android应用
-2. 运行ReProto指定根Protobuf类
-3. 自动解析所有相关类和依赖
-4. 生成完整的.proto文件结构
-
-## 输出示例
+## 📊 输出示例
 
 ### 输入：Java源码
-
 ```java
 public final class MessageData extends GeneratedMessageLite {
+    public static final int TEXT_MESSAGE_FIELD_NUMBER = 1;
+    public static final int MEDIA_MESSAGE_FIELD_NUMBER = 2;
+    
     private int dataCase_;
     private Object data_;
     
@@ -121,27 +91,15 @@ public final class MessageData extends GeneratedMessageLite {
         TEXT_MESSAGE(1),
         MEDIA_MESSAGE(2),
         DATA_NOT_SET(0);
-        
-        private final int value;
-        
-        private DataCase(int value) {
-            this.value = value;
-        }
     }
-    
-    // 其他方法...
 }
 ```
 
 ### 输出：Proto文件
-
 ```protobuf
 syntax = "proto3";
 
 package com.example.messaging.v1.models;
-
-import "com/example/messaging/v1/models/message_data.proto";
-import "com/example/messaging/v1/models/conversation_data.proto";
 
 option java_package = "com.example.messaging.v1.models";
 option java_multiple_files = true;
@@ -154,78 +112,40 @@ message MessageData {
 }
 ```
 
-## 开发环境设置
+## 🚀 工作流程
 
-### 使用Poetry
+1. 使用JADX反编译Android应用：`jadx -d out_jadx app.apk`
+2. 运行ReProto指定根Protobuf类
+3. 自动解析所有相关类和依赖
+4. 生成完整的.proto文件结构
 
-```bash
-# 安装Poetry
-curl -sSL https://install.python-poetry.org | python3 -
-
-# 安装项目依赖
-poetry install
-
-# 进入虚拟环境
-poetry shell
-```
-
-## 项目结构
-
-```
-reproto/
-├── core/           # 核心重构逻辑
-├── parsing/        # Java源码解析
-├── generation/     # Proto文件生成
-├── models/         # 数据模型定义
-├── utils/          # 工具函数
-└── main.py         # 入口点
-```
-
-## 🔧 配置选项
+## 📝 配置选项
 
 ### 日志配置
-```bash
-# 指定日志目录
-python main.py sources/ com.example.Model output/ --log-dir ./my_logs
-
-# 日志文件格式: reproto-YYYY-MM-DD-HH-MM-SS.log
-# 例如: reproto-2024-01-15-14-30-25.log
-```
+- 日志文件自动保存到 `./logs/` 目录
+- 文件格式: `reproto-YYYY-MM-DD-HH-MM-SS.log`
+- 使用 `--verbose` 参数查看详细处理过程
 
 ### 输出格式
 生成的proto文件遵循Google Protobuf Style Guide：
-- 文件名使用`snake_case.proto`格式
-- 字段名使用`snake_case`
-- 消息名使用`PascalCase`
-- 枚举值使用`UPPER_SNAKE_CASE`
-- 正确的包结构和导入语句
+- 文件名：`snake_case.proto`
+- 字段名：`snake_case`
+- 消息名：`PascalCase`
+- 枚举值：`UPPER_SNAKE_CASE`
 
-## 🏗️ 架构设计
+## 🔧 开发
 
-本项目采用模块化设计，详细的架构说明请参考 [ARCHITECTURE.md](./ARCHITECTURE.md)。
+```bash
+# 使用Poetry管理依赖
+poetry install
+poetry shell
 
-核心模块：
-- **Core Layer**: 主协调器 + 字节码解码器
-- **Parsing Layer**: Java解析器 + 源码分析器  
-- **Generation Layer**: Proto文件生成器
-- **Model Layer**: 数据定义模型
-- **Utility Layer**: 日志系统 + 文件工具
+# 运行测试
+python main.py ../out_jadx/sources 'com.example.TestClass' ../test_output --verbose
+```
 
+## 📄 许可证
 
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request！
-
-### 代码规范
-- 遵循PEP 8代码风格
-- 使用类型注解
-- 编写单元测试
-- 更新文档
-
-## 🙏 致谢
-
-- Google Protobuf团队提供的优秀框架
-- JADX项目提供的反编译工具
-- 逆向工程社区的技术支持
+本项目为私有项目，仅供授权用户使用。
 
 ---

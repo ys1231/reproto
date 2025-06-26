@@ -353,4 +353,84 @@ class JavaParser:
             # 对于非java包的类，保留完整路径以便后续处理
             pass
         
-        return field_type 
+        return field_type
+
+    def extract_field_tags(self, java_file_path: Path) -> Optional[dict]:
+        """
+        从Java文件中提取字段标签信息
+        
+        解析类似这样的常量定义：
+        public static final int TEXT_FIELD_NUMBER = 1;
+        public static final int ISFINAL_FIELD_NUMBER = 2;
+        
+        Args:
+            java_file_path: Java文件路径
+            
+        Returns:
+            字段标签映射 {field_name: tag} 或 None 如果解析失败
+        """
+        try:
+            # 读取Java文件内容
+            content = java_file_path.read_text(encoding='utf-8')
+            
+            # 匹配字段标签常量定义
+            # 格式：public static final int FIELD_NAME_FIELD_NUMBER = 数字;
+            field_tag_pattern = re.compile(
+                r'public\s+static\s+final\s+int\s+'
+                r'([A-Z_]+)_FIELD_NUMBER\s*=\s*(\d+)\s*;'
+            )
+            
+            field_tags = {}
+            
+            # 查找所有字段标签定义
+            for match in field_tag_pattern.finditer(content):
+                field_const_name = match.group(1)  # 如 TEXT, ISFINAL
+                tag_value = int(match.group(2))     # 如 1, 2
+                
+                # 转换常量名为字段名
+                # TEXT -> text_, ISFINAL -> isFinal_
+                field_name = self._const_name_to_field_name(field_const_name)
+                field_tags[field_name] = tag_value
+                
+                self.logger.debug(f"    🏷️ 提取字段标签: {field_name} = {tag_value}")
+            
+            return field_tags if field_tags else None
+            
+        except Exception as e:
+            self.logger.error(f"❌ 提取字段标签失败 {java_file_path}: {e}")
+            return None
+    
+    def _const_name_to_field_name(self, const_name: str) -> str:
+        """
+        将常量名转换为字段名
+        
+        Args:
+            const_name: 常量名（如 TEXT, ISFINAL, PAYLOADTYPE, USERID, INSTALLATIONID）
+            
+        Returns:
+            字段名（如 text_, isFinal_, payloadType_, userId_, installationId_）
+        """
+        # 特殊处理一些常见模式
+        special_cases = {
+            'ISFINAL': 'isFinal',
+            'PAYLOADTYPE': 'payloadType',
+            'TERMINATIONREASON': 'terminationReason',
+            'USERID': 'userId',
+            'INSTALLATIONID': 'installationId',
+            'PHONENUMBER': 'phoneNumber',
+            'COUNTRYCODE': 'countryCode',
+        }
+        
+        if const_name in special_cases:
+            return special_cases[const_name] + '_'
+        
+        # 通用转换：将UPPER_CASE转换为camelCase
+        if '_' in const_name:
+            # 处理下划线分隔的常量名
+            parts = const_name.lower().split('_')
+            field_name = parts[0] + ''.join(word.capitalize() for word in parts[1:])
+        else:
+            # 处理单个单词的常量名
+            field_name = const_name.lower()
+        
+        return field_name + '_' 

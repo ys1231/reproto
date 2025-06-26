@@ -65,7 +65,7 @@ class JavaSourceAnalyzer:
         从Java源码中获取字段的真实类型
         
         Args:
-            field_name_raw: 原始字段名（如 id_）
+            field_name_raw: 原始字段名（如 contacts_）
             expected_type: 期望的基础类型（message、enum 或 map）
             
         Returns:
@@ -77,40 +77,74 @@ class JavaSourceAnalyzer:
         # 清理字段名
         field_name = field_name_raw.rstrip('_')
         
-        # 对于map类型，特殊处理MapFieldLite声明
-        if expected_type == 'map':
-            map_type = self._get_map_type_from_field(field_name)
-            if map_type:
-                return map_type
+        # 查找字段声明模式，支持多种声明格式
+        patterns = [
+            # Internal.ProtobufList<Contact> contacts_ = ...
+            rf'private\s+Internal\.ProtobufList<([^>]+)>\s+{re.escape(field_name)}_\s*=',
+            # MapFieldLite<String, Contact> contacts_ = ...
+            rf'private\s+MapFieldLite<([^,]+),\s*([^>]+)>\s+{re.escape(field_name)}_\s*=',
+            # List<Contact> contacts_ = ...
+            rf'private\s+List<([^>]+)>\s+{re.escape(field_name)}_\s*=',
+            # Internal.IntList badges_ = ... (用于枚举列表)
+            rf'private\s+(Internal\.IntList)\s+{re.escape(field_name)}_\s*=',
+            # 普通字段声明: private Contact contact_ = ...
+            rf'private\s+(\w+(?:\.\w+)*)\s+{re.escape(field_name)}_\s*=',
+            # 简单字段声明: private Contact contact_;
+            rf'private\s+(\w+(?:\.\w+)*)\s+{re.escape(field_name)}_\s*;'
+        ]
         
-        # 对于枚举类型，优先从setter方法中获取类型
-        if expected_type == 'enum':
-            setter_type = self._get_type_from_setter(field_name)
-            if setter_type:
-                return setter_type
-        
-        # 查找字段声明模式：private SomeType fieldName_;
-        pattern = rf'private\s+(\w+)\s+{re.escape(field_name)}_\s*;'
-        matches = re.findall(pattern, self._current_class_content)
-        
-        if matches:
-            simple_type = matches[0]
-            
-            # 如果字段声明是基础类型（如int），但期望类型是enum，跳过
-            if expected_type == 'enum' and simple_type in ['int', 'long', 'short', 'byte']:
-                return None
-            
-            # 查找import语句获取完整类名
-            import_pattern = rf'import\s+([^;]*\.{re.escape(simple_type)});'
-            import_matches = re.findall(import_pattern, self._current_class_content)
-            
-            if import_matches:
-                return import_matches[0]  # 返回完整的包名.类名
-            else:
-                # 如果没有import，假设在同一个包中
-                if self._current_class_name:
-                    package_name = '.'.join(self._current_class_name.split('.')[:-1])
-                    return f"{package_name}.{simple_type}"
+        for i, pattern in enumerate(patterns):
+            matches = re.findall(pattern, self._current_class_content)
+            if matches:
+                if i == 0:  # Internal.ProtobufList<Contact>
+                    element_type = matches[0]
+                    return f"Internal.ProtobufList<{element_type}>"
+                elif i == 1:  # MapFieldLite<String, Contact>
+                    key_type, value_type = matches[0]
+                    return f"MapFieldLite<{key_type.strip()}, {value_type.strip()}>"
+                elif i == 2:  # List<Contact>
+                    element_type = matches[0]
+                    return f"List<{element_type}>"
+                elif i == 3:  # Internal.IntList
+                    return "Internal.IntList"
+                else:  # 普通类型
+                    simple_type = matches[0]
+                    
+                    # 检查是否为Java基础类型，如果是则直接返回
+                    basic_java_types = {
+                        'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
+                        'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
+                        'Byte', 'Short', 'Character'
+                    }
+                    
+                    if simple_type in basic_java_types:
+                        return simple_type  # 直接返回基础类型，不添加包名
+                    
+                    # 如果字段声明是基础类型（如int），但期望类型是enum，尝试从setter方法获取真实类型
+                    if expected_type == 'enum' and simple_type in ['int', 'long', 'short', 'byte']:
+                        setter_type = self._get_type_from_setter(field_name)
+                        if setter_type:
+                            return setter_type
+                        continue
+                    
+                    # 特殊处理：Internal.IntList可能对应枚举列表
+                    if simple_type == 'Internal.IntList':
+                        # 检查是否有对应的枚举setter方法
+                        enum_type = self._get_enum_type_from_list_setter(field_name)
+                        if enum_type:
+                            return f"Internal.ProtobufList<{enum_type}>"
+                    
+                    # 查找import语句获取完整类名
+                    import_pattern = rf'import\s+([^;]*\.{re.escape(simple_type)});'
+                    import_matches = re.findall(import_pattern, self._current_class_content)
+                    
+                    if import_matches:
+                        return import_matches[0]  # 返回完整的包名.类名
+                    else:
+                        # 如果没有import，假设在同一个包中
+                        if self._current_class_name:
+                            package_name = '.'.join(self._current_class_name.split('.')[:-1])
+                            return f"{package_name}.{simple_type}"
         
         return None
     
@@ -151,24 +185,38 @@ class JavaSourceAnalyzer:
         Returns:
             protobuf类型名
         """
+        if not java_type:
+            return 'string'
+        
         # 基础类型映射
         basic_types = {
+            'int': 'int32',
+            'long': 'int64', 
+            'float': 'float',
+            'double': 'double',
+            'boolean': 'bool',
             'String': 'string',
-            'Integer': 'int32',
-            'Long': 'int64',
-            'Boolean': 'bool',
-            'Float': 'float',
-            'Double': 'double',
-            'ByteString': 'bytes'
+            'java.lang.String': 'string',
+            'java.lang.Integer': 'int32',
+            'java.lang.Long': 'int64',
+            'java.lang.Float': 'float',
+            'java.lang.Double': 'double',
+            'java.lang.Boolean': 'bool',
+            'byte[]': 'bytes',
+            'ByteString': 'bytes',
+            'com.google.protobuf.ByteString': 'bytes',
         }
         
+        # 检查是否为基础类型
         if java_type in basic_types:
             return basic_types[java_type]
         
-        # 对于其他类型，去掉包名，只保留类名
+        # 如果是完整的类名，提取简单类名
         if '.' in java_type:
-            return java_type.split('.')[-1]
+            simple_name = java_type.split('.')[-1]
+            return simple_name
         
+        # 默认返回原类型名
         return java_type
 
     def _get_type_from_setter(self, field_name: str) -> Optional[str]:
@@ -184,8 +232,49 @@ class JavaSourceAnalyzer:
         # 将字段名转换为setter方法名
         setter_name = f"set{field_name[0].upper()}{field_name[1:]}"
         
-        # 查找setter方法：public void setSpamType(SpamType spamType)
-        pattern = rf'public\s+void\s+{re.escape(setter_name)}\s*\(\s*(\w+)\s+\w+\s*\)'
+        # 查找私有setter方法：/* JADX INFO: Access modifiers changed from: private */ 
+        # public void setSpamType(SpamType spamType)
+        patterns = [
+            # 查找setter方法签名，支持public或private
+            rf'(?:public|private)\s+void\s+{re.escape(setter_name)}\s*\(\s*(\w+)\s+\w+\s*\)',
+            # 也支持注释中的private标记
+            rf'\/\*[^*]*private[^*]*\*\/\s*(?:public|private)\s+void\s+{re.escape(setter_name)}\s*\(\s*(\w+)\s+\w+\s*\)'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, self._current_class_content, re.DOTALL)
+            if matches:
+                simple_type = matches[0]
+                
+                # 查找import语句获取完整类名
+                import_pattern = rf'import\s+([^;]*\.{re.escape(simple_type)});'
+                import_matches = re.findall(import_pattern, self._current_class_content)
+                
+                if import_matches:
+                    return import_matches[0]
+                else:
+                    # 如果没有import，假设在同一个包中
+                    if self._current_class_name:
+                        package_name = '.'.join(self._current_class_name.split('.')[:-1])
+                        return f"{package_name}.{simple_type}"
+        
+        return None
+    
+    def _get_enum_type_from_list_setter(self, field_name: str) -> Optional[str]:
+        """
+        从列表setter方法中获取枚举类型（如setBadges(int i10, Badge badge)）
+        
+        Args:
+            field_name: 字段名（如 badges）
+            
+        Returns:
+            枚举类型名
+        """
+        # 将字段名转换为setter方法名
+        setter_name = f"set{field_name[0].upper()}{field_name[1:]}"
+        
+        # 查找列表setter方法：setBadges(int i10, Badge badge)
+        pattern = rf'(?:public|private)\s+void\s+{re.escape(setter_name)}\s*\(\s*int\s+\w+,\s*(\w+)\s+\w+\s*\)'
         matches = re.findall(pattern, self._current_class_content)
         
         if matches:
@@ -249,10 +338,13 @@ class ProtoReconstructor:
         
         # 初始化核心组件
         self.java_parser = JavaParser()      # Java文件解析器
-        # 创建Java源码分析器并传递给InfoDecoder
-        self.java_source_analyzer = JavaSourceAnalyzer(sources_dir)
-        self.info_decoder = InfoDecoder(self.java_source_analyzer)    # 字节码解码器
+        self.enum_parser = EnumParser(str(sources_dir))  # 枚举解析器需要字符串路径
+        self.info_decoder = InfoDecoder()
         self.proto_generator = ProtoGenerator()  # Proto文件生成器
+        
+        # 初始化Java源码分析器
+        self.java_source_analyzer = JavaSourceAnalyzer(sources_dir)
+        self.info_decoder.java_source_analyzer = self.java_source_analyzer
         
         # 任务调度状态
         self.processed_classes: Set[str] = set()  # 已处理的类
@@ -260,27 +352,38 @@ class ProtoReconstructor:
         self.message_definitions: Dict[str, MessageDefinition] = {}  # 消息定义
         self.enum_definitions: Dict[str, EnumDefinition] = {}        # 枚举定义
         
+        # 错误和状态跟踪
+        self.failed_classes: Dict[str, str] = {}  # 失败的类 -> 失败原因
+        self.skipped_classes: Dict[str, str] = {}  # 跳过的类 -> 跳过原因
+        
+        # 当前处理的类名（用于调试）
+        self._current_processing_class = None
+        
     def reconstruct_from_root(self, root_class: str) -> Dict[str, any]:
         """
-        从根类开始重构所有相关的proto文件
+        从根类开始重构protobuf定义
         
         Args:
-            root_class: 根类的完整类名，如 'com.example.Model'
+            root_class: 根类的完整名称
             
         Returns:
-            重构结果字典
+            包含统计信息的字典
         """
-        self.logger.info(f"开始重构，根类: {root_class}")
+        self.logger.info(f"🚀 开始重构，根类: {root_class}")
         
-        # 启动任务队列
+        # 1. 添加根类到处理队列
         self.pending_classes.append(root_class)
         
-        # 广度优先处理所有依赖类
+        # 2. 处理所有消息类
         self._process_all_classes()
         
-                # 生成最终的proto文件
+        # 3. 解析所有枚举类
+        self._process_all_enums()
+        
+        # 4. 生成proto文件
         self._generate_all_proto_files()
         
+        # 5. 返回统计信息
         # 报告未知类型统计
         self._report_unknown_types()
         
@@ -304,6 +407,35 @@ class ProtoReconstructor:
             self.logger.info(f"处理类: {class_name}")
             self._process_single_class(class_name)
             
+    def _process_all_enums(self) -> None:
+        """解析目标包下的所有枚举类"""
+        self.logger.info("🔢 开始解析枚举类...")
+        
+        # 从已处理的类中推断目标包名
+        target_package = None
+        if self.message_definitions:
+            # 取第一个消息定义的包名
+            first_message = next(iter(self.message_definitions.values()))
+            target_package = first_message.package_name
+        elif self.processed_classes:
+            # 从已处理的类名中推断包名
+            first_class = next(iter(self.processed_classes))
+            target_package = '.'.join(first_class.split('.')[:-1])
+        
+        if not target_package:
+            self.logger.warning("⚠️  无法推断目标包名，跳过枚举解析")
+            return
+        
+        # 解析目标包下的所有枚举
+        enum_definitions = self.enum_parser.parse_all_enums(target_package)
+        
+        # 存储枚举定义
+        for enum_def in enum_definitions:
+            self.enum_definitions[enum_def.full_name] = enum_def
+            self.logger.info(f"  ✅ 解析枚举: {enum_def.name} ({len(enum_def.values)} 个值)")
+        
+        self.logger.info(f"📊 枚举解析完成，共解析 {len(enum_definitions)} 个枚举")
+            
     def _process_single_class(self, class_name: str) -> None:
         """
         处理单个Java类
@@ -317,10 +449,19 @@ class ProtoReconstructor:
         self.java_source_analyzer.set_current_class(class_name)
         
         try:
+            # 检查是否应该跳过这个类
+            if self._should_skip_class(class_name):
+                skip_reason = self._get_skip_reason(class_name)
+                self.skipped_classes[class_name] = skip_reason
+                self.logger.info(f"  ⏭️  跳过类: {class_name} ({skip_reason})")
+                return
+            
             # 1. 查找Java文件
             java_file_path = self._find_java_file(class_name)
             if not java_file_path:
-                self.logger.info(f"  ⚠️  找不到Java文件: {class_name}")
+                error_msg = "找不到对应的Java文件"
+                self.failed_classes[class_name] = error_msg
+                self.logger.warning(f"  ❌ {error_msg}: {class_name}")
                 return
             
             # 2. 尝试解析为枚举
@@ -335,12 +476,14 @@ class ProtoReconstructor:
             # 3. 尝试解析为消息类
             info_string, objects_array = self.java_parser.parse_java_file(java_file_path)
             if not info_string:
-                self.logger.info(f"  ⚠️  无法解析Java文件: {class_name}")
+                error_msg = "无法从Java文件中提取protobuf信息"
+                self.failed_classes[class_name] = error_msg
+                self.logger.warning(f"  ❌ {error_msg}: {class_name}")
                 return
             
             # 4. 解码字节码为消息定义
             message_def = self.info_decoder.decode_message_info(
-                class_name, info_string, objects_array
+                class_name, info_string, objects_array, java_file_path
             )
             
             if message_def:
@@ -350,10 +493,16 @@ class ProtoReconstructor:
                 # 5. 发现并添加依赖类到队列
                 self._discover_dependencies(message_def)
             else:
-                self.logger.info(f"  ❌ 解码失败: {class_name}")
+                error_msg = "字节码解码失败，可能不是protobuf消息类"
+                self.failed_classes[class_name] = error_msg
+                self.logger.warning(f"  ❌ {error_msg}: {class_name}")
                 
         except Exception as e:
-            self.logger.error(f"  ❌ 处理异常: {class_name} - {e}")
+            error_msg = f"处理异常: {str(e)}"
+            self.failed_classes[class_name] = error_msg
+            self.logger.error(f"  ❌ {error_msg}: {class_name}")
+            if hasattr(self, '_verbose') and self._verbose:
+                self.logger.exception(f"详细异常信息 ({class_name}):")
         finally:
             # 无论成功失败都标记为已处理，避免无限循环
             self.processed_classes.add(class_name)
@@ -387,19 +536,202 @@ class ProtoReconstructor:
         
         # 从常规字段提取依赖
         for field in message_def.fields:
-            dep = self._resolve_field_dependency(field.type_name, message_def.package_name)
-            if dep:
-                dependencies.append(dep)
+            deps = self._extract_field_dependencies(field.type_name, message_def.package_name)
+            dependencies.extend(deps)
         
         # 从oneof字段提取依赖
         for oneof in message_def.oneofs:
             for field in oneof.fields:
-                dep = self._resolve_field_dependency(field.type_name, message_def.package_name)
-                if dep:
-                    dependencies.append(dep)
+                deps = self._extract_field_dependencies(field.type_name, message_def.package_name)
+                dependencies.extend(deps)
+        
+        # 去重
+        return list(set(dependencies))
+    
+    def _extract_field_dependencies(self, type_name: str, current_package: str) -> List[str]:
+        """
+        从字段类型中提取所有依赖（包括map类型的键值类型）
+        
+        Args:
+            type_name: 字段类型名
+            current_package: 当前包名
+            
+        Returns:
+            依赖类名列表
+        """
+        dependencies = []
+        
+        if not type_name:
+            return dependencies
+            
+        # 处理map类型: map<string, Contact> -> [Contact]
+        if type_name.startswith('map<') and type_name.endswith('>'):
+            map_content = type_name[4:-1]  # 移除 'map<' 和 '>'
+            # 分割键值类型，处理嵌套的尖括号
+            key_type, value_type = self._parse_map_types(map_content)
+            
+            # 递归处理键类型和值类型
+            dependencies.extend(self._extract_field_dependencies(key_type, current_package))
+            dependencies.extend(self._extract_field_dependencies(value_type, current_package))
+            
+        # 处理普通类型
+        else:
+            dep = self._resolve_field_dependency(type_name, current_package)
+            if dep:
+                dependencies.append(dep)
         
         return dependencies
     
+    def _parse_map_types(self, map_content: str) -> tuple:
+        """
+        解析map类型的键值类型
+        
+        Args:
+            map_content: map内容，如 "string, Contact" 或 "string, List<Contact>"
+            
+        Returns:
+            (key_type, value_type) 元组
+        """
+        # 简单情况：没有嵌套的尖括号
+        if '<' not in map_content:
+            parts = [part.strip() for part in map_content.split(',', 1)]
+            if len(parts) == 2:
+                return parts[0], parts[1]
+        
+        # 复杂情况：处理嵌套的尖括号
+        bracket_count = 0
+        for i, char in enumerate(map_content):
+            if char == '<':
+                bracket_count += 1
+            elif char == '>':
+                bracket_count -= 1
+            elif char == ',' and bracket_count == 0:
+                # 找到分隔符
+                key_type = map_content[:i].strip()
+                value_type = map_content[i+1:].strip()
+                return key_type, value_type
+        
+        # 如果解析失败，返回默认值
+        return 'string', 'string'
+    
+    def _should_skip_class(self, class_name: str) -> bool:
+        """
+        判断是否应该跳过某个类
+        
+        Args:
+            class_name: 类名
+            
+        Returns:
+            是否应该跳过
+        """
+        # 跳过已经处理过的类
+        if class_name in self.processed_classes:
+            return True
+            
+        # 跳过基础类型（包括Java基础类型和常见的系统类型）
+        basic_types = {
+            # Java基础类型
+            'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
+            'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
+            'Byte', 'Short', 'Character',
+            # Java系统类型
+            'java.lang.String', 'java.lang.Integer', 'java.lang.Long', 
+            'java.lang.Boolean', 'java.lang.Float', 'java.lang.Double',
+            'java.lang.Object', 'java.util.List', 'java.util.Map',
+            'com.google.protobuf.ByteString', 'com.google.protobuf.MessageLite'
+        }
+        
+        if class_name in basic_types:
+            return True
+            
+        # 跳过明显的系统类型和内部类型
+        if self._is_system_or_internal_type(class_name):
+            return True
+            
+        return False
+    
+    def _is_system_or_internal_type(self, class_name: str) -> bool:
+        """
+        判断是否为系统类型或内部类型
+        
+        Args:
+            class_name: 类名
+            
+        Returns:
+            是否为系统或内部类型
+        """
+        # 跳过明显不是protobuf类的包
+        skip_packages = [
+            'java.', 'javax.', 'android.', 'androidx.',
+            'kotlin.', 'kotlinx.', 'com.google.common.',
+            'org.apache.', 'org.junit.', 'junit.',
+            'com.unity3d.',  # 添加Unity3D包，避免误匹配
+            'Internal.'      # 跳过Internal包下的类型
+        ]
+        
+        for skip_pkg in skip_packages:
+            if class_name.startswith(skip_pkg):
+                return True
+                
+        # 跳过明显的内部类型
+        internal_patterns = [
+            'Internal.ProtobufList',
+            'MapFieldLite',
+            'GeneratedMessageLite',
+            'MessageLiteOrBuilder'
+        ]
+        
+        for pattern in internal_patterns:
+            if pattern in class_name:
+                return True
+                
+        return False
+    
+    def _get_skip_reason(self, class_name: str) -> str:
+        """
+        获取跳过类的原因
+        
+        Args:
+            class_name: 类名
+            
+        Returns:
+            跳过原因
+        """
+        # 基础类型
+        basic_types = {
+            'java.lang.String', 'java.lang.Integer', 'java.lang.Long', 
+            'java.lang.Boolean', 'java.lang.Float', 'java.lang.Double',
+            'java.lang.Object', 'java.util.List', 'java.util.Map',
+            'com.google.protobuf.ByteString', 'com.google.protobuf.MessageLite'
+        }
+        
+        if class_name in basic_types:
+            return "基础类型"
+            
+        # 已处理
+        if class_name in self.processed_classes:
+            return "已处理"
+            
+        # 系统包
+        system_packages = {
+            'java.': 'Java系统包',
+            'javax.': 'Java扩展包', 
+            'android.': 'Android系统包',
+            'androidx.': 'AndroidX包',
+            'kotlin.': 'Kotlin标准库',
+            'kotlinx.': 'Kotlin扩展库',
+            'com.google.common.': 'Google通用库',
+            'org.apache.': 'Apache库',
+            'org.junit.': 'JUnit测试库',
+            'junit.': 'JUnit库'
+        }
+        
+        for prefix, reason in system_packages.items():
+            if class_name.startswith(prefix):
+                return reason
+                
+        return "未知原因"
+
     def _resolve_field_dependency(self, type_name: str, current_package: str) -> Optional[str]:
         """
         解析字段类型名为完整的类名
@@ -414,9 +746,13 @@ class ProtoReconstructor:
         if not type_name:
             return None
             
-        # 跳过基础类型
-        basic_types = {'string', 'int32', 'int64', 'bool', 'float', 'double', 'bytes', 'message', 'enum'}
-        if type_name in basic_types:
+        # 检查是否为基础类型
+        basic_proto_types = {
+            'string', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
+            'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'float', 'double', 'bytes'
+        }
+        
+        if type_name in basic_proto_types:
             return None
             
         # 如果已经是完整类名，直接返回
@@ -431,7 +767,13 @@ class ProtoReconstructor:
         # 如果推断失败，尝试查找所有可能的匹配类
         # 需要传递当前类名以便进行源码分析
         current_class = getattr(self, '_current_processing_class', None)
-        return self._find_best_matching_class(type_name, current_package, current_class)
+        best_match = self._find_best_matching_class(type_name, current_package, current_class)
+        
+        # 如果找到匹配，验证该类是否确实存在
+        if best_match and self._find_java_file(best_match):
+            return best_match
+            
+        return None
     
     def _find_java_file(self, class_name: str) -> Optional[Path]:
         """
@@ -450,10 +792,31 @@ class ProtoReconstructor:
         if full_path.exists():
             return full_path
         
+        # 处理内部类：支持多层嵌套
+        # com.example.Models$Inner$Deep -> com/example/Models$Inner$Deep.java
+        if '$' in class_name:
+            # 找到最后一个.的位置，分离包名和类名部分
+            last_dot_index = class_name.rfind('.')
+            if last_dot_index != -1:
+                package_path = class_name[:last_dot_index].replace('.', '/')  # 包路径
+                class_part = class_name[last_dot_index + 1:]  # 类名部分（可能包含多个$）
+                inner_class_file_path = f"{package_path}/{class_part}.java"
+                inner_class_full_path = self.sources_dir / inner_class_file_path
+                
+                if inner_class_full_path.exists():
+                    return inner_class_full_path
+        
         # 备选方案：按简单类名搜索
         simple_name = class_name.split('.')[-1]
-        for java_file in self.sources_dir.rglob(f"{simple_name}.java"):
-            return java_file
+        # 对于内部类，简单名称可能包含多个$符号
+        if '$' in simple_name:
+            # 对于内部类，直接使用包含$的完整文件名搜索
+            for java_file in self.sources_dir.rglob(f"{simple_name}.java"):
+                return java_file
+        else:
+            # 对于普通类，使用原来的逻辑
+            for java_file in self.sources_dir.rglob(f"{simple_name}.java"):
+                return java_file
         
         return None
     
@@ -503,7 +866,8 @@ class ProtoReconstructor:
         if len(package_parts) > 1:
             parent = '.'.join(package_parts[:-1])
             # 常见的同级包名
-            common_siblings = ['models', 'model', 'types', 'entities', 'data', 'proto', 'protobuf']
+            common_siblings = ['models', 'model', 'types', 'entities', 'data', 'proto', 'protobuf', 
+                             'enums', 'enum', 'common', 'shared', 'core', 'base']
             for sibling in common_siblings:
                 if sibling != package_parts[-1]:  # 避免重复
                     candidates.append(f"{parent}.{sibling}")
@@ -511,9 +875,31 @@ class ProtoReconstructor:
         # 4. 根包下的常见子包
         if len(package_parts) > 2:
             root_package = '.'.join(package_parts[:2])  # 如 com.example
-            common_subpackages = ['models', 'model', 'types', 'entities', 'common', 'shared', 'proto']
+            common_subpackages = ['models', 'model', 'types', 'entities', 'common', 'shared', 'proto',
+                                'enums', 'enum', 'core', 'base', 'data', 'dto', 'vo']
             for subpkg in common_subpackages:
                 candidates.append(f"{root_package}.{subpkg}")
+        
+        # 5. 深度搜索：在当前包的各级父包下寻找常见子包
+        for i in range(len(package_parts) - 1, 1, -1):
+            parent_package = '.'.join(package_parts[:i])
+            # 在每个父包下寻找常见的子包
+            search_patterns = ['models', 'enums', 'types', 'common', 'shared', 'core']
+            for pattern in search_patterns:
+                candidates.append(f"{parent_package}.{pattern}")
+                # 也尝试更深一层的组合
+                if i > 2:
+                    candidates.append(f"{parent_package}.{pattern}.{package_parts[-1]}")
+        
+        # 6. 特殊情况：如果当前是v1包，也尝试其他版本
+        if 'v1' in package_parts:
+            for i, part in enumerate(package_parts):
+                if part == 'v1':
+                    # 尝试v2, v3等
+                    for version in ['v2', 'v3', 'v4']:
+                        version_package = package_parts.copy()
+                        version_package[i] = version
+                        candidates.append('.'.join(version_package))
         
         # 去重并保持顺序
         seen = set()
@@ -544,6 +930,11 @@ class ProtoReconstructor:
                 self.logger.info(f"    🔍 源码分析: {type_name} -> {actual_type}")
                 return actual_type
         
+        # 预检查：如果是基础字段名，可能不需要创建单独的类
+        if self._is_basic_field_type(type_name, current_class):
+            self.logger.info(f"    🔍 基础字段类型检测: {type_name} -> 跳过类匹配")
+            return None
+        
         # 如果源码分析失败，回退到模糊匹配
         matching_classes = []
         
@@ -557,7 +948,11 @@ class ProtoReconstructor:
                 if package_parts:
                     package_name = '.'.join(package_parts)
                     full_class_name = f"{package_name}.{file_name}"
-                    matching_classes.append((full_class_name, self._calculate_package_similarity(package_name, current_package)))
+                    
+                    # 添加包名过滤，避免匹配到无关的第三方库
+                    if self._is_valid_package_for_matching(package_name, current_package):
+                        similarity = self._calculate_package_similarity(package_name, current_package)
+                        matching_classes.append((full_class_name, similarity))
         
         if not matching_classes:
             return None
@@ -568,6 +963,114 @@ class ProtoReconstructor:
         
         self.logger.info(f"    🔍 智能匹配: {type_name} -> {best_match}")
         return best_match
+
+    def _is_basic_field_type(self, type_name: str, current_class: str = None) -> bool:
+        """
+        检查是否为基础字段类型，避免为简单字段创建不必要的类
+        
+        Args:
+            type_name: 类型名
+            current_class: 当前类名
+            
+        Returns:
+            是否为基础字段类型
+        """
+        # 首先检查是否为Java基础类型
+        basic_java_types = {
+            'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
+            'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
+            'Byte', 'Short', 'Character'
+        }
+        
+        if type_name in basic_java_types:
+            return True
+        
+        # 常见的基础字段名模式
+        basic_patterns = [
+            'tags',      # tags_ 字段通常是 repeated string
+            'ids',       # ids_ 字段通常是 repeated string 或 repeated int64
+            'values',    # values_ 字段通常是基础类型数组
+            'names',     # names_ 字段通常是 repeated string
+            'urls',      # urls_ 字段通常是 repeated string
+            'emails',    # emails_ 字段通常是 repeated string
+        ]
+        
+        type_lower = type_name.lower()
+        
+        # 检查是否匹配基础模式
+        if type_lower in basic_patterns:
+            return True
+        
+        # 如果有当前类，尝试从Java源码中验证
+        if current_class:
+            try:
+                java_file = self._find_java_file(current_class)
+                if java_file:
+                    content = java_file.read_text(encoding='utf-8')
+                    
+                    # 查找对应的字段声明，检查是否为基础类型
+                    field_name_pattern = type_lower.rstrip('s') + 's?_'  # tags -> tags?_
+                    import re
+                    
+                    # 查找字段声明：private List<String> tags_; 或 private Internal.ProtobufList<String> tags_;
+                    patterns = [
+                        rf'private\s+(?:Internal\.)?ProtobufList<String>\s+{field_name_pattern}',
+                        rf'private\s+List<String>\s+{field_name_pattern}',
+                        rf'private\s+(?:Internal\.)?ProtobufList<Integer>\s+{field_name_pattern}',
+                        rf'private\s+List<Integer>\s+{field_name_pattern}',
+                        rf'private\s+(?:Internal\.)?ProtobufList<Long>\s+{field_name_pattern}',
+                        rf'private\s+List<Long>\s+{field_name_pattern}',
+                    ]
+                    
+                    for pattern in patterns:
+                        if re.search(pattern, content, re.IGNORECASE):
+                            return True
+                            
+            except Exception as e:
+                self.logger.debug(f"    检查基础字段类型时出错: {e}")
+        
+        return False
+
+    def _is_valid_package_for_matching(self, candidate_package: str, current_package: str) -> bool:
+        """
+        检查候选包名是否适合用于匹配
+        
+        Args:
+            candidate_package: 候选包名
+            current_package: 当前包名
+            
+        Returns:
+            是否为有效的匹配候选
+        """
+        # 获取当前包的根包名（通常是前两部分，如 com.truecaller）
+        current_parts = current_package.split('.')
+        if len(current_parts) >= 2:
+            current_root = '.'.join(current_parts[:2])
+        else:
+            current_root = current_package
+        
+        # 过滤规则
+        filters = [
+            # 1. 排除明显的第三方库
+            lambda pkg: 'unity3d' not in pkg.lower(),
+            lambda pkg: 'facebook' not in pkg.lower(),
+            lambda pkg: 'google' not in pkg.lower() or pkg.startswith(current_root),
+            lambda pkg: 'android' not in pkg.lower() or pkg.startswith(current_root),
+            lambda pkg: 'androidx' not in pkg.lower(),
+            lambda pkg: 'kotlin' not in pkg.lower(),
+            lambda pkg: 'java' not in pkg.lower(),
+            lambda pkg: 'javax' not in pkg.lower(),
+            
+            # 2. 优先选择同根包的类
+            lambda pkg: pkg.startswith(current_root) or self._calculate_package_similarity(pkg, current_package) > 0.3
+        ]
+        
+        # 应用所有过滤规则
+        for filter_func in filters:
+            if not filter_func(candidate_package):
+                return False
+        
+        return True
 
     def _calculate_package_similarity(self, package1: str, package2: str) -> float:
         """
@@ -606,6 +1109,17 @@ class ProtoReconstructor:
         Returns:
             实际的完整类型名
         """
+        # 首先检查是否为基础类型，如果是则直接跳过
+        basic_types = {
+            'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
+            'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
+            'Byte', 'Short', 'Character'
+        }
+        
+        if inferred_type in basic_types:
+            self.logger.debug(f"    跳过基础类型: {inferred_type}")
+            return None
+        
         try:
             java_file = self._find_java_file(class_name)
             if not java_file:
@@ -625,6 +1139,11 @@ class ProtoReconstructor:
             if matches:
                 # 取第一个匹配的类型
                 actual_type_simple = matches[0]
+                
+                # 再次检查匹配的类型是否为基础类型
+                if actual_type_simple in basic_types:
+                    self.logger.debug(f"    匹配到基础类型，跳过: {actual_type_simple}")
+                    return None
                 
                 # 检查是否有import语句
                 import_pattern = rf'import\s+([^;]*\.{re.escape(actual_type_simple)});'
