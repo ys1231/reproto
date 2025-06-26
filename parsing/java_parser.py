@@ -253,4 +253,104 @@ class JavaParser:
         # 按数值排序
         enum_values.sort(key=lambda x: x[1])
         
-        return enum_values 
+        return enum_values
+
+    def get_raw_field_type(self, java_file_path: Path, field_name_raw: str) -> Optional[str]:
+        """
+        从Java文件中获取指定字段的原始类型
+        
+        Args:
+            java_file_path: Java文件路径
+            field_name_raw: 原始字段名（如 latitude_）
+            
+        Returns:
+            字段的Java原始类型，如果找不到则返回None
+        """
+        try:
+            # 读取Java文件内容
+            content = java_file_path.read_text(encoding='utf-8')
+            
+            # 查找字段声明
+            field_type = self._extract_field_type_from_content(content, field_name_raw)
+            return field_type
+            
+        except Exception as e:
+            self.logger.debug(f"获取字段类型失败 {java_file_path} - {field_name_raw}: {e}")
+            return None
+    
+    def _extract_field_type_from_content(self, content: str, field_name_raw: str) -> Optional[str]:
+        """
+        从Java文件内容中提取指定字段的类型
+        
+        Args:
+            content: Java文件内容
+            field_name_raw: 原始字段名（如 latitude_）
+            
+        Returns:
+            字段的Java类型，如果找不到则返回None
+        """
+        # 构建字段声明的正则表达式模式
+        # 匹配: private Type fieldName_ = ...;
+        # 或: private Type fieldName_;
+        
+        # 转义字段名中的特殊字符
+        escaped_field_name = re.escape(field_name_raw)
+        
+        # 字段声明模式
+        patterns = [
+            # 标准字段声明: private Type fieldName_ = value;
+            rf'private\s+([^\s]+(?:<[^>]*>)?(?:\[\])?)\s+{escaped_field_name}\s*=',
+            # 简单字段声明: private Type fieldName_;
+            rf'private\s+([^\s]+(?:<[^>]*>)?(?:\[\])?)\s+{escaped_field_name}\s*;',
+            # 其他访问修饰符
+            rf'(?:public|protected|package)\s+([^\s]+(?:<[^>]*>)?(?:\[\])?)\s+{escaped_field_name}\s*[=;]',
+            # 无访问修饰符
+            rf'([^\s]+(?:<[^>]*>)?(?:\[\])?)\s+{escaped_field_name}\s*[=;]',
+        ]
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, content, re.MULTILINE)
+            for match in matches:
+                field_type = match.group(1).strip()
+                
+                # 清理类型字符串
+                cleaned_type = self._clean_field_type(field_type)
+                if cleaned_type:
+                    self.logger.debug(f"找到字段类型: {field_name_raw} -> {cleaned_type}")
+                    return cleaned_type
+        
+        self.logger.debug(f"未找到字段类型: {field_name_raw}")
+        return None
+    
+    def _clean_field_type(self, field_type: str) -> Optional[str]:
+        """
+        清理和标准化字段类型字符串
+        
+        Args:
+            field_type: 原始字段类型字符串
+            
+        Returns:
+            清理后的字段类型，如果无效则返回None
+        """
+        if not field_type:
+            return None
+        
+        # 移除多余的空白字符
+        field_type = field_type.strip()
+        
+        # 跳过明显不是类型的字符串
+        if field_type in ['private', 'public', 'protected', 'static', 'final', 'volatile', 'transient']:
+            return None
+        
+        # 处理泛型类型，保留完整的泛型信息
+        # 例如: MapFieldLite<String, Contact> 保持不变
+        
+        # 处理数组类型
+        # 例如: String[] 保持不变
+        
+        # 处理完全限定类名，提取简单类名
+        if '.' in field_type and not field_type.startswith('java.'):
+            # 对于非java包的类，保留完整路径以便后续处理
+            pass
+        
+        return field_type 

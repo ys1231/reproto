@@ -8,8 +8,8 @@
 import re
 import os
 from typing import List, Optional, Dict, Tuple
-from ..models.message_definition import EnumDefinition, EnumValue
-from ..utils.logger import get_logger
+from models.message_definition import EnumDefinition, EnumValueDefinition
+from utils.logger import get_logger
 
 
 class EnumParser:
@@ -129,7 +129,7 @@ class EnumParser:
         
         return enum_def
     
-    def _extract_enum_values(self, content: str) -> List[EnumValue]:
+    def _extract_enum_values(self, content: str) -> List[EnumValueDefinition]:
         """
         从Java内容中提取枚举值
         
@@ -161,7 +161,7 @@ class EnumParser:
                 
             try:
                 value = int(value_str)
-                enum_values.append(EnumValue(name=name, value=value))
+                enum_values.append(EnumValueDefinition(name=name, value=value))
             except ValueError:
                 continue
         

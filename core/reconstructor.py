@@ -15,6 +15,7 @@ from collections import deque
 from typing import Set, Dict, List, Optional
 
 from parsing.java_parser import JavaParser
+from parsing.enum_parser import EnumParser
 from core.info_decoder import InfoDecoder
 from generation.proto_generator import ProtoGenerator
 from models.message_definition import MessageDefinition, EnumDefinition, EnumValueDefinition
@@ -28,11 +29,36 @@ class JavaSourceAnalyzer:
         self.sources_dir = sources_dir
         self._current_class_content = None
         self._current_class_name = None
+        # 初始化JavaParser用于字段类型解析
+        self.java_parser = JavaParser()
     
     def set_current_class(self, class_name: str):
         """设置当前分析的类"""
         self._current_class_name = class_name
         self._current_class_content = self._load_class_content(class_name)
+    
+    def get_raw_field_type(self, field_name_raw: str) -> Optional[str]:
+        """
+        获取字段的原始Java类型
+        
+        Args:
+            field_name_raw: 原始字段名（如 latitude_）
+            
+        Returns:
+            字段的Java原始类型，如果找不到则返回None
+        """
+        if not self._current_class_name:
+            return None
+        
+        # 构建Java文件路径
+        file_path = self._current_class_name.replace('.', '/') + '.java'
+        java_file_path = self.sources_dir / file_path
+        
+        if not java_file_path.exists():
+            return None
+        
+        # 使用JavaParser获取字段类型
+        return self.java_parser.get_raw_field_type(java_file_path, field_name_raw)
     
     def get_field_type(self, field_name_raw: str, expected_type: str) -> Optional[str]:
         """
@@ -40,7 +66,7 @@ class JavaSourceAnalyzer:
         
         Args:
             field_name_raw: 原始字段名（如 id_）
-            expected_type: 期望的基础类型（message 或 enum）
+            expected_type: 期望的基础类型（message、enum 或 map）
             
         Returns:
             真实的类型名，如果无法获取则返回None
@@ -50,6 +76,12 @@ class JavaSourceAnalyzer:
         
         # 清理字段名
         field_name = field_name_raw.rstrip('_')
+        
+        # 对于map类型，特殊处理MapFieldLite声明
+        if expected_type == 'map':
+            map_type = self._get_map_type_from_field(field_name)
+            if map_type:
+                return map_type
         
         # 对于枚举类型，优先从setter方法中获取类型
         if expected_type == 'enum':
@@ -82,6 +114,63 @@ class JavaSourceAnalyzer:
         
         return None
     
+    def _get_map_type_from_field(self, field_name: str) -> Optional[str]:
+        """
+        从MapFieldLite字段声明中获取map的键值类型
+        
+        Args:
+            field_name: 字段名（如 contacts）
+            
+        Returns:
+            map类型字符串，如 "map<string, Contact>"
+        """
+        # 查找MapFieldLite字段声明：private MapFieldLite<String, Contact> contacts_ = ...
+        pattern = rf'private\s+MapFieldLite<([^,]+),\s*([^>]+)>\s+{re.escape(field_name)}_\s*='
+        matches = re.findall(pattern, self._current_class_content)
+        
+        if matches:
+            key_type, value_type = matches[0]
+            key_type = key_type.strip()
+            value_type = value_type.strip()
+            
+            # 转换Java类型到protobuf类型
+            proto_key_type = self._java_type_to_proto_type(key_type)
+            proto_value_type = self._java_type_to_proto_type(value_type)
+            
+            return f"map<{proto_key_type}, {proto_value_type}>"
+        
+        return None
+    
+    def _java_type_to_proto_type(self, java_type: str) -> str:
+        """
+        将Java类型转换为protobuf类型
+        
+        Args:
+            java_type: Java类型名
+            
+        Returns:
+            protobuf类型名
+        """
+        # 基础类型映射
+        basic_types = {
+            'String': 'string',
+            'Integer': 'int32',
+            'Long': 'int64',
+            'Boolean': 'bool',
+            'Float': 'float',
+            'Double': 'double',
+            'ByteString': 'bytes'
+        }
+        
+        if java_type in basic_types:
+            return basic_types[java_type]
+        
+        # 对于其他类型，去掉包名，只保留类名
+        if '.' in java_type:
+            return java_type.split('.')[-1]
+        
+        return java_type
+
     def _get_type_from_setter(self, field_name: str) -> Optional[str]:
         """
         从setter方法中获取字段的真实类型（特别适用于枚举类型）
@@ -189,8 +278,11 @@ class ProtoReconstructor:
         # 广度优先处理所有依赖类
         self._process_all_classes()
         
-        # 生成最终的proto文件
+                # 生成最终的proto文件
         self._generate_all_proto_files()
+        
+        # 报告未知类型统计
+        self._report_unknown_types()
         
         # 返回处理结果
         results = {}
@@ -198,7 +290,7 @@ class ProtoReconstructor:
             results[class_name] = message_def
         for class_name, enum_def in self.enum_definitions.items():
             results[class_name] = enum_def
-        
+            
         return results
         
     def _process_all_classes(self) -> None:
@@ -666,6 +758,18 @@ class ProtoReconstructor:
         
         return self.output_dir / package_path / proto_name
     
+    def _report_unknown_types(self) -> None:
+        """报告未知字节码类型的统计信息"""
+        if not self.info_decoder.unknown_types_stats:
+            return
+            
+        self.logger.warning("📊 发现未知字节码类型统计:")
+        for byte_code, count in sorted(self.info_decoder.unknown_types_stats.items()):
+            wire_type = byte_code & 7
+            self.logger.warning(f"   类型 {byte_code} (0x{byte_code:02x}, wire_type={wire_type}): {count} 次")
+        
+        self.logger.warning("💡 建议: 请将这些信息反馈给开发者，以便完善类型映射表")
+
     @staticmethod
     def _to_snake_case(camel_str: str) -> str:
         """

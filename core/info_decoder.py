@@ -36,8 +36,10 @@ class InfoDecoder:
         """
         self.logger = get_logger("info_decoder")
         
-        # 字节码到Protobuf类型的映射表（逆向工程的核心成果）
+        # Protobuf字段类型映射表
+        # 键：字节码中的类型值，值：对应的protobuf字段类型
         self.type_mapping = {
+            0: 'double',      # 64位浮点数 (double) - 基于ContactAddress.latitude_和longitude_的分析
             1: 'float',      # FLOAT
             2: 'int64',      # INT64  
             3: 'int32',      # INT32
@@ -48,12 +50,16 @@ class InfoDecoder:
             27: 'message',   # REPEATED MESSAGE
             39: 'int32',     # REPEATED INT32 (packed)
             44: 'enum',      # PACKED ENUM
-            520: 'string',   # STRING (Ȉ = 520)
+            50: 'map',       # Map字段 - 基于BulkSearchResult.contacts的分析
+            520: 'string',   # UTF-8字符串
             538: 'string',   # REPEATED STRING (Ț = 538)  
         }
         
         # Java源码分析器
         self.java_source_analyzer = java_source_analyzer
+        
+        # 统计未知类型（用于持续改进）
+        self.unknown_types_stats = {}  # {byte_code: count}
     
     def decode_message_info(self, class_name: str, info_string: str, objects: List[str]) -> Optional[MessageDefinition]:
         """
@@ -151,7 +157,7 @@ class InfoDecoder:
         
         Args:
             message_def: 消息定义对象
-            bytes_data: 字节数组
+            bytes_data: 字节码数据
             objects: 对象数组
         """
         # 跳过前10个字节的元数据
@@ -163,11 +169,17 @@ class InfoDecoder:
             field_tag = bytes_data[i]
             field_type_byte = bytes_data[i + 1]
             
-            # 查找类型映射
+            # 查找类型映射，对未知类型进行智能处理
             if field_type_byte not in self.type_mapping:
-                continue
+                # 统计未知类型
+                self.unknown_types_stats[field_type_byte] = self.unknown_types_stats.get(field_type_byte, 0) + 1
                 
-            field_type = self.type_mapping[field_type_byte]
+                # 记录未知类型，但不跳过字段
+                self.logger.warning(f"    ⚠️  发现未知字节码类型: {field_type_byte} (0x{field_type_byte:02x})")
+                field_type = self._analyze_unknown_type_with_source_priority(field_type_byte, objects, object_index)
+                self.logger.info(f"    🔍 推断未知类型: {field_type_byte} -> {field_type}")
+            else:
+                field_type = self.type_mapping[field_type_byte]
             
             # 从对象数组获取字段信息
             field_info = self._extract_field_info(objects, object_index, field_type)
@@ -218,15 +230,20 @@ class InfoDecoder:
         # 确定字段类型名
         field_type_name = field_type  # 默认使用基础类型
         
-        # 对于消息类型和枚举类型，检查objects数组中是否有具体的类型引用
-        if field_type in ['message', 'enum']:
+        # 对于消息类型、枚举类型和map类型，检查objects数组中是否有具体的类型引用
+        if field_type in ['message', 'enum', 'map']:
             if object_index < len(objects):
                 next_obj = objects[object_index]
                 if self._is_type_reference(next_obj):
                     # 直接使用objects数组中的类型引用，这是最准确的信息源
-                    field_type_name = self._clean_type_reference(next_obj)
+                    if field_type == 'map':
+                        # 对于map类型，从MapEntry引用中推断键值类型
+                        field_type_name = self._extract_map_type_from_entry(next_obj, field_name_raw)
+                        self.logger.info(f"    🗺️ 从MapEntry获取map类型: {field_name} -> {field_type_name}")
+                    else:
+                        field_type_name = self._clean_type_reference(next_obj)
+                        self.logger.info(f"    🔗 从objects数组获取类型: {field_name} -> {field_type_name}")
                     object_index += 1
-                    self.logger.info(f"    🔗 从objects数组获取类型: {field_name} -> {field_type_name}")
                 else:
                     # 没有显式引用，优先从Java源码中获取真实类型
                     real_type = self._get_real_field_type_from_source(field_name_raw, field_type)
@@ -241,6 +258,9 @@ class InfoDecoder:
                         elif field_type == 'message':
                             field_type_name = self._infer_message_type_from_field_name(field_name_raw)
                             self.logger.info(f"    🔍 推断消息类型: {field_name} -> {field_type_name}")
+                        elif field_type == 'map':
+                            field_type_name = self._infer_map_type_from_source(field_name_raw)
+                            self.logger.info(f"    🔍 推断map类型: {field_name} -> {field_type_name}")
             else:
                 # objects数组已结束，优先从Java源码中获取真实类型
                 real_type = self._get_real_field_type_from_source(field_name_raw, field_type)
@@ -255,6 +275,9 @@ class InfoDecoder:
                     elif field_type == 'message':
                         field_type_name = self._infer_message_type_from_field_name(field_name_raw)
                         self.logger.info(f"    🔍 推断消息类型: {field_name} -> {field_type_name}")
+                    elif field_type == 'map':
+                        field_type_name = self._infer_map_type_from_source(field_name_raw)
+                        self.logger.info(f"    🔍 推断map类型: {field_name} -> {field_type_name}")
         
         return field_name, field_type_name, object_index
 
@@ -486,6 +509,305 @@ class InfoDecoder:
         if oneof_def.fields:
             message_def.oneofs.append(oneof_def)
     
+    def _extract_map_type_from_entry(self, entry_ref: str, field_name_raw: str) -> str:
+        """
+        从MapEntry引用中提取map的键值类型
+        
+        Args:
+            entry_ref: MapEntry引用，如 "qux.f107553a"
+            field_name_raw: 原始字段名，用于推断类型
+            
+        Returns:
+            map类型字符串，如 "map<string, Contact>"
+        """
+        try:
+            # 优先从Java源码中获取真实的map类型
+            if self.java_source_analyzer:
+                real_type = self.java_source_analyzer.get_field_type(field_name_raw, 'map')
+                if real_type and real_type.startswith('map<'):
+                    return real_type
+            
+            # 如果无法从源码获取，进行智能推断
+            return self._infer_map_type_from_source(field_name_raw)
+            
+        except Exception as e:
+            self.logger.warning(f"    ⚠️  从MapEntry提取类型失败: {e}")
+            return self._infer_map_type_from_source(field_name_raw)
+    
+    def _infer_map_type_from_source(self, field_name_raw: str) -> str:
+        """
+        从字段名推断map类型
+        
+        Args:
+            field_name_raw: 原始字段名（如 contacts_）
+            
+        Returns:
+            推断的map类型字符串
+        """
+        # 移除末尾的下划线
+        clean_name = field_name_raw.rstrip('_')
+        
+        # 基于字段名的通用推断规则
+        if clean_name.lower().endswith('map') or clean_name.lower().endswith('mapping'):
+            # xxxMap -> map<string, Xxx>
+            base_name = clean_name[:-3] if clean_name.lower().endswith('map') else clean_name[:-7]
+            value_type = self._camel_to_pascal_case(base_name) if base_name else 'string'
+            return f"map<string, {value_type}>"
+        elif clean_name.lower() in ['contacts', 'users', 'profiles']:
+            # 常见的复数形式字段，推断为实体映射
+            singular = clean_name[:-1] if clean_name.endswith('s') else clean_name
+            value_type = self._camel_to_pascal_case(singular)
+            return f"map<string, {value_type}>"
+        elif clean_name.lower().endswith('tags'):
+            # xxxTags -> map<string, string> (标签通常是字符串到字符串的映射)
+            return "map<string, string>"
+        elif clean_name.lower().endswith('ids'):
+            # xxxIds -> map<string, string> (ID映射)
+            return "map<string, string>"
+        else:
+            # 默认推断：字段名作为值类型
+            value_type = self._camel_to_pascal_case(clean_name)
+            return f"map<string, {value_type}>"
+
+    def _analyze_unknown_type_with_source_priority(self, field_type_byte: int, objects: List[str], object_index: int) -> str:
+        """
+        分析未知字节码类型，进行智能推断，优先使用Java源码分析结果
+        
+        Args:
+            field_type_byte: 未知的字节码类型
+            objects: 对象数组
+            object_index: 当前对象索引
+            
+        Returns:
+            推断的字段类型
+        """
+        # 分析字节码的结构
+        wire_type = field_type_byte & 7  # 低3位是wire type
+        field_number = field_type_byte >> 3  # 高位是field number
+        
+        self.logger.debug(f"    🔬 字节码分析: byte={field_type_byte}, wire_type={wire_type}, field_number={field_number}")
+        
+        # 第一步：尝试从Java源码获取真实类型
+        java_type = None
+        if object_index < len(objects) and self.java_source_analyzer:
+            field_name_raw = objects[object_index]
+            try:
+                java_type = self._get_java_field_type_for_unknown(field_name_raw)
+                if java_type:
+                    self.logger.info(f"    ✅ Java源码分析: {field_name_raw} -> {java_type}")
+            except Exception as e:
+                self.logger.debug(f"    ⚠️  Java源码分析失败: {e}")
+        
+        # 第二步：基于wire type进行字节码推断
+        bytecode_type = self._analyze_unknown_type_by_wire_type(wire_type, objects, object_index, field_type_byte)
+        
+        # 第三步：交叉校验和最终决策
+        final_type = self._cross_validate_types(java_type, bytecode_type, wire_type, field_type_byte)
+        
+        if java_type and java_type != final_type:
+            self.logger.info(f"    🔄 类型校验: Java({java_type}) vs 字节码({bytecode_type}) -> 最终({final_type})")
+        
+        return final_type
+    
+    def _get_java_field_type_for_unknown(self, field_name_raw: str) -> Optional[str]:
+        """
+        从Java源码中获取未知字段的真实类型
+        
+        Args:
+            field_name_raw: 原始字段名（如 latitude_）
+            
+        Returns:
+            Java字段的proto类型，如果无法获取则返回None
+        """
+        if not self.java_source_analyzer:
+            return None
+            
+        try:
+            # 获取Java字段的原始类型
+            java_raw_type = self.java_source_analyzer.get_raw_field_type(field_name_raw)
+            if not java_raw_type:
+                return None
+            
+            # 将Java类型转换为proto类型
+            proto_type = self._java_type_to_proto_type(java_raw_type)
+            return proto_type
+            
+        except Exception as e:
+            self.logger.debug(f"    ⚠️  获取Java字段类型失败: {e}")
+            return None
+    
+    def _java_type_to_proto_type(self, java_type: str) -> str:
+        """
+        将Java类型转换为proto类型
+        
+        Args:
+            java_type: Java类型字符串
+            
+        Returns:
+            对应的proto类型
+        """
+        # 基础类型映射
+        type_mapping = {
+            'boolean': 'bool',
+            'byte': 'int32',
+            'short': 'int32', 
+            'int': 'int32',
+            'long': 'int64',
+            'float': 'float',
+            'double': 'double',
+            'String': 'string',
+            'ByteString': 'bytes',
+        }
+        
+        # 直接映射
+        if java_type in type_mapping:
+            return type_mapping[java_type]
+        
+        # 处理复杂类型
+        if java_type.startswith('MapFieldLite<'):
+            return 'map'
+        elif java_type.startswith('Internal.ProtobufList<') or java_type.startswith('List<'):
+            return 'message'  # repeated message
+        elif java_type.endswith('[]'):
+            return 'message'  # repeated
+        elif '.' in java_type and java_type.split('.')[-1][0].isupper():
+            # 看起来像是类名，可能是message或enum
+            return 'message'  # 默认为message，具体类型由其他逻辑确定
+        
+        # 默认返回string
+        return 'string'
+    
+    def _analyze_unknown_type_by_wire_type(self, wire_type: int, objects: List[str], object_index: int, field_type_byte: int) -> str:
+        """
+        基于wire type分析未知字节码类型
+        
+        Args:
+            wire_type: wire type (0-5)
+            objects: 对象数组
+            object_index: 当前对象索引
+            field_type_byte: 原始字节码类型
+            
+        Returns:
+            推断的字段类型
+        """
+        if wire_type == 0:
+            # VARINT: int32, int64, uint32, uint64, sint32, sint64, bool, enum
+            return self._infer_varint_type(objects, object_index)
+        elif wire_type == 1:
+            # 64-BIT: fixed64, sfixed64, double
+            return 'double'  # 默认为double（比int64更常见）
+        elif wire_type == 2:
+            # LENGTH_DELIMITED: string, bytes, embedded messages, packed repeated fields
+            return self._infer_length_delimited_type(objects, object_index, field_type_byte)
+        elif wire_type == 5:
+            # 32-BIT: fixed32, sfixed32, float
+            return 'float'  # 默认为float
+        else:
+            # 其他未知wire type
+            self.logger.warning(f"    ⚠️  未知wire type: {wire_type}")
+            return self._fallback_type_inference(objects, object_index)
+    
+    def _cross_validate_types(self, java_type: Optional[str], bytecode_type: str, wire_type: int, field_type_byte: int) -> str:
+        """
+        交叉校验Java类型和字节码类型，返回最终类型
+        
+        Args:
+            java_type: Java源码分析得到的类型
+            bytecode_type: 字节码分析得到的类型
+            wire_type: wire type
+            field_type_byte: 原始字节码类型
+            
+        Returns:
+            最终确定的字段类型
+        """
+        # 如果没有Java类型信息，使用字节码推断
+        if not java_type:
+            return bytecode_type
+        
+        # 如果Java类型和字节码类型一致，直接返回
+        if java_type == bytecode_type:
+            return java_type
+        
+        # 类型不一致时的校验逻辑
+        if wire_type == 0:  # VARINT
+            # 对于VARINT类型，Java源码更准确
+            if java_type in ['bool', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64']:
+                return java_type
+            elif java_type == 'message':  # 可能是enum
+                return 'enum' if bytecode_type == 'enum' else java_type
+        elif wire_type == 1:  # 64-BIT
+            # 对于64位类型，Java源码更准确
+            if java_type in ['double', 'fixed64', 'sfixed64']:
+                return java_type
+        elif wire_type == 2:  # LENGTH_DELIMITED
+            # 对于长度分隔类型，Java源码更准确
+            if java_type in ['string', 'bytes', 'message', 'map']:
+                return java_type
+        elif wire_type == 5:  # 32-BIT
+            # 对于32位类型，Java源码更准确
+            if java_type in ['float', 'fixed32', 'sfixed32']:
+                return java_type
+        
+        # 默认优先使用Java类型
+        self.logger.info(f"    🔧 类型冲突，优先使用Java类型: {java_type} (字节码推断: {bytecode_type})")
+        return java_type
+
+    def _infer_varint_type(self, objects: List[str], object_index: int) -> str:
+        """推断VARINT类型字段"""
+        # 检查objects数组中是否有类型提示
+        if object_index < len(objects):
+            field_name = objects[object_index].rstrip('_')
+            
+            # 基于字段名推断
+            if any(keyword in field_name.lower() for keyword in ['type', 'status', 'mode', 'enum']):
+                return 'enum'
+            elif field_name.lower() in ['count', 'size', 'length', 'number']:
+                return 'int32'
+            elif field_name.lower().endswith('_id') or field_name.lower() == 'id':
+                return 'int64'
+            elif field_name.lower() in ['enabled', 'visible', 'active', 'valid']:
+                return 'bool'
+        
+        return 'int32'  # 默认为int32
+    
+    def _infer_length_delimited_type(self, objects: List[str], object_index: int, field_type_byte: int) -> str:
+        """推断LENGTH_DELIMITED类型字段"""
+        # 检查是否可能是map类型（基于已知的map类型字节码模式）
+        if field_type_byte == 50 or field_type_byte in range(48, 60):  # 扩展map类型的可能范围
+            return 'map'
+        
+        # 检查objects数组中是否有类型提示
+        if object_index < len(objects):
+            field_name = objects[object_index].rstrip('_')
+            
+            # 基于字段名推断
+            if field_name.lower().endswith('map') or field_name.lower().endswith('mapping'):
+                return 'map'
+            elif field_name.lower() in ['name', 'title', 'description', 'text', 'url', 'email']:
+                return 'string'
+            elif field_name.lower().endswith('data') or field_name.lower().endswith('bytes'):
+                return 'bytes'
+            elif field_name.lower().endswith('s') and len(field_name) > 2:
+                # 复数形式，可能是repeated字段
+                return 'message'  # repeated message
+        
+        return 'string'  # 默认为string
+    
+    def _fallback_type_inference(self, objects: List[str], object_index: int) -> str:
+        """兜底类型推断"""
+        if object_index < len(objects):
+            field_name = objects[object_index].rstrip('_')
+            
+            # 基于字段名的通用推断
+            if any(keyword in field_name.lower() for keyword in ['id', 'count', 'size', 'number']):
+                return 'int32'
+            elif any(keyword in field_name.lower() for keyword in ['name', 'title', 'text', 'url']):
+                return 'string'
+            elif field_name.lower().endswith('s'):
+                return 'message'  # 可能是repeated字段
+        
+        return 'string'  # 最终兜底
+
     @staticmethod
     def _to_snake_case(camel_str: str) -> str:
         """

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "reproto"
-version = "0.0.4"
+version = "0.0.5"
 description = "一个强大的逆向工程工具, 能够从任何使用Google Protobuf Lite的Android应用中自动重构出完整的.proto文件结构."
 readme = "README.md"
 license = "MIT"

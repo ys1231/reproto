@@ -262,6 +262,23 @@ class ProtoGenerator:
         if field.type_name in basic_types:
             return None
         
+        # 处理map类型：map<string, Contact> -> 提取值类型Contact
+        if field.type_name.startswith('map<'):
+            # 解析map类型：map<key_type, value_type>
+            import re
+            match = re.match(r'map<([^,]+),\s*([^>]+)>', field.type_name)
+            if match:
+                key_type, value_type = match.groups()
+                key_type = key_type.strip()
+                value_type = value_type.strip()
+                
+                # 只处理值类型的导入（键类型通常是基础类型）
+                if value_type not in basic_types:
+                    full_class_name = self._resolve_full_class_name(value_type, current_package, all_messages)
+                    if full_class_name:
+                        return self._class_name_to_import_path(full_class_name)
+            return None
+        
         # 解析完整类名
         full_class_name = self._resolve_full_class_name(field.type_name, current_package, all_messages)
         if full_class_name:
@@ -324,6 +341,23 @@ class ProtoGenerator:
         basic_type = self._get_basic_proto_type(field.type_name)
         if basic_type:
             return basic_type
+        
+        # 处理map类型：map<string, Contact> -> map<string, Contact>
+        if field.type_name.startswith('map<'):
+            # 解析map类型并清理值类型名
+            import re
+            match = re.match(r'map<([^,]+),\s*([^>]+)>', field.type_name)
+            if match:
+                key_type, value_type = match.groups()
+                key_type = key_type.strip()
+                value_type = value_type.strip()
+                
+                # 如果值类型是完整类名，提取简单类型名
+                if '.' in value_type:
+                    value_type = value_type.split('.')[-1]
+                
+                return f"map<{key_type}, {value_type}>"
+            return field.type_name
         
         # 枚举类型：根据字段名生成枚举类型名
         if field.type_name == 'enum':
