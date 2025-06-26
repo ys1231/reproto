@@ -36,7 +36,7 @@ python main.py <java_sources_dir> <root_class> <output_dir>
 pip install -e .
 
 # 使用命令行工具
-proto-reconstructor <java_sources_dir> <root_class> <output_dir>
+reproto <java_sources_dir> <root_class> <output_dir>
 ```
 
 ## 📖 使用方法
@@ -87,7 +87,7 @@ Java源码 → 字节码提取 → 类型解码 → 依赖发现 → 源码验�
 ## 📁 项目结构
 
 ```
-proto_reconstructor/
+reproto/
 ├── main.py                     # 主程序入口
 ├── core/                       # 核心组件
 │   ├── reconstructor.py        # 主协调器
@@ -188,8 +188,8 @@ reproto/
 # 指定日志目录
 python main.py sources/ com.example.Model output/ --log-dir ./my_logs
 
-# 日志文件格式: proto_reconstructor-YYYY-MM-DD-HH-MM-SS.log
-# 例如: proto_reconstructor-2024-01-15-14-30-25.log
+# 日志文件格式: reproto-YYYY-MM-DD-HH-MM-SS.log
+# 例如: reproto-2024-01-15-14-30-25.log
 ```
 
 ### 输出格式

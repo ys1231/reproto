@@ -35,9 +35,9 @@ class LoggerManager:
         log_path = Path(log_dir)
         log_path.mkdir(exist_ok=True)
         
-        # 生成日志文件名：proto_reconstructor-YYYY-MM-DD-HH-MM-SS.log
+        # 生成日志文件名：reproto-YYYY-MM-DD-HH-MM-SS.log
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        log_file = log_path / f"proto_reconstructor-{timestamp}.log"
+        log_file = log_path / f"reproto-{timestamp}.log"
         
         # 控制台输出 - 彩色格式
         logger.add(

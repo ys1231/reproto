@@ -6,10 +6,10 @@ Protobuf重构器 - 命令行入口
 支持任意Android应用，完全基于Java字节码推断
 
 Usage:
-    python -m proto_reconstructor.main <java_sources_dir> <root_class> <output_dir> [--log-dir LOG_DIR]
+    python -m reproto.main <java_sources_dir> <root_class> <output_dir> [--log-dir LOG_DIR]
 
 Example:
-    python -m proto_reconstructor.main ./out_jadx/sources com.example.Model ./protos_generated --log-dir ./logs
+    python -m reproto.main ./out_jadx/sources com.example.Model ./protos_generated --log-dir ./logs
 
 Author: AI Assistant
 """
