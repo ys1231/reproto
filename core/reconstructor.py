@@ -31,6 +31,9 @@ class JavaSourceAnalyzer:
         self._current_class_name = None
         # 初始化JavaParser用于字段类型解析
         self.java_parser = JavaParser()
+        # 使用文件缓存系统优化I/O性能
+        from utils.file_cache import get_file_cache
+        self.file_cache = get_file_cache()
     
     def set_current_class(self, class_name: str):
         """设置当前分析的类"""
@@ -295,19 +298,21 @@ class JavaSourceAnalyzer:
         return None
     
     def _load_class_content(self, class_name: str) -> Optional[str]:
-        """加载类的源码内容"""
+        """加载类的源码内容（使用缓存优化）"""
         try:
             # 标准路径：com.example.Model -> com/example/Model.java
             file_path = class_name.replace('.', '/') + '.java'
             full_path = self.sources_dir / file_path
             
-            if full_path.exists():
-                return full_path.read_text(encoding='utf-8')
+            # 使用缓存系统获取文件内容
+            content = self.file_cache.get_content(full_path)
+            if content:
+                return content
             
             # 备选方案：按简单类名搜索
             simple_name = class_name.split('.')[-1]
             for java_file in self.sources_dir.rglob(f"{simple_name}.java"):
-                return java_file.read_text(encoding='utf-8')
+                return self.file_cache.get_content(java_file)
             
             return None
         except Exception:
@@ -346,6 +351,10 @@ class ProtoReconstructor:
         self.java_source_analyzer = JavaSourceAnalyzer(sources_dir)
         self.info_decoder.java_source_analyzer = self.java_source_analyzer
         
+        # 初始化类型索引（延迟加载）
+        from utils.type_index import get_type_index
+        self.type_index = get_type_index(sources_dir)
+        
         # 任务调度状态
         self.processed_classes: Set[str] = set()  # 已处理的类
         self.pending_classes: deque = deque()     # 待处理的类队列
@@ -383,7 +392,15 @@ class ProtoReconstructor:
         # 4. 生成proto文件
         self._generate_all_proto_files()
         
-        # 5. 返回统计信息
+        # 5. 输出性能统计信息
+        from utils.file_cache import get_file_cache
+        file_cache = get_file_cache()
+        file_cache.print_stats()
+        
+        # 输出类型索引统计
+        self.type_index.print_stats()
+        
+        # 6. 返回统计信息
         # 报告未知类型统计
         self._report_unknown_types()
         
@@ -913,7 +930,7 @@ class ProtoReconstructor:
 
     def _find_best_matching_class(self, type_name: str, current_package: str, current_class: str = None) -> Optional[str]:
         """
-        查找最佳匹配的类（用于处理推断失败的情况）
+        查找最佳匹配的类（使用索引优化）
         
         Args:
             type_name: 类型名（如 IdData）
@@ -935,7 +952,28 @@ class ProtoReconstructor:
             self.logger.info(f"    🔍 基础字段类型检测: {type_name} -> 跳过类匹配")
             return None
         
-        # 如果源码分析失败，回退到模糊匹配
+        # 使用类型索引进行快速匹配
+        best_match = self.type_index.find_best_match(type_name, current_package)
+        
+        if best_match:
+            self.logger.info(f"    🔍 索引匹配: {type_name} -> {best_match}")
+            return best_match
+        
+        # 索引未找到匹配，回退到传统方法（保留兼容性）
+        self.logger.debug(f"    ⚠️  索引未找到匹配，回退到目录扫描: {type_name}")
+        return self._fallback_directory_search(type_name, current_package)
+    
+    def _fallback_directory_search(self, type_name: str, current_package: str) -> Optional[str]:
+        """
+        回退的目录扫描方法（当索引匹配失败时使用）
+        
+        Args:
+            type_name: 类型名
+            current_package: 当前包名
+            
+        Returns:
+            匹配的类名或None
+        """
         matching_classes = []
         
         # 在源码目录中搜索
@@ -961,7 +999,7 @@ class ProtoReconstructor:
         matching_classes.sort(key=lambda x: x[1], reverse=True)
         best_match = matching_classes[0][0]
         
-        self.logger.info(f"    🔍 智能匹配: {type_name} -> {best_match}")
+        self.logger.info(f"    🔍 目录扫描匹配: {type_name} -> {best_match}")
         return best_match
 
     def _is_basic_field_type(self, type_name: str, current_class: str = None) -> bool:
@@ -1125,8 +1163,12 @@ class ProtoReconstructor:
             if not java_file:
                 return None
                 
-            # 读取Java源码
-            content = java_file.read_text(encoding='utf-8')
+            # 使用缓存读取Java源码
+            from utils.file_cache import get_file_cache
+            file_cache = get_file_cache()
+            content = file_cache.get_content(java_file)
+            if not content:
+                return None
             
             # 查找字段声明模式：private SomeType fieldName_;
             # 我们要找的是以inferred_type结尾的类型声明

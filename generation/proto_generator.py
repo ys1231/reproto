@@ -158,12 +158,13 @@ class ProtoGenerator:
         """
         lines = [f'message {message_def.name} {{']
         
-        # 生成oneof字段
+        # 生成oneof字段（oneof字段内部也按tag排序）
         for oneof in message_def.oneofs:
             lines.extend(self._generate_oneof_definition(oneof))
         
-        # 生成常规字段
-        for field in message_def.fields:
+        # 生成常规字段（按tag排序）
+        sorted_fields = sorted(message_def.fields, key=lambda field: field.tag)
+        for field in sorted_fields:
             lines.append(self._generate_field_definition(field))
         
         lines.append('}')
@@ -181,19 +182,24 @@ class ProtoGenerator:
         """
         lines = [f'enum {enum_def.name} {{']
         
-        # 生成枚举值
-        for enum_value in enum_def.values:
+        # 生成枚举值（按value排序）
+        sorted_values = sorted(enum_def.values, key=lambda enum_value: enum_value.value)
+        for enum_value in sorted_values:
             lines.append(f'  {enum_value.name} = {enum_value.value};')
         
         lines.append('}')
         return lines
     
     def _generate_oneof_definition(self, oneof) -> List[str]:
-        """生成oneof字段定义"""
+        """生成oneof字段定义（字段按tag排序）"""
         lines = [f'  oneof {oneof.name} {{']
-        for field in oneof.fields:
+        
+        # 对oneof内部的字段按tag排序
+        sorted_fields = sorted(oneof.fields, key=lambda field: field.tag)
+        for field in sorted_fields:
             field_type = self._resolve_field_type(field)
             lines.append(f'    {field_type} {field.name} = {field.tag};')
+        
         lines.append('  }')
         return lines
     
