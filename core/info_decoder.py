@@ -547,7 +547,7 @@ class InfoDecoder:
                 return real_type  # 返回原始Java类型
             return None
         except Exception as e:
-            self.logger.warning(f"    ⚠️  源码分析失败: {e}")
+            self.logger.debug(f"    🔍 源码分析失败: {e}")
             return None
 
     def _infer_message_type_from_field_name(self, field_name_raw: str) -> str:

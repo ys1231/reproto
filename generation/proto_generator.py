@@ -39,28 +39,41 @@ class ProtoGenerator:
         Returns:
             完整的proto文件内容字符串
         """
-        lines = []
-        
-        # 1. 文件头
-        lines.extend(self._generate_file_header())
-        
-        # 2. 包声明
-        if message_def.package_name:
-            lines.extend(self._generate_package_declaration(message_def.package_name))
-        
-        # 3. 导入语句
-        imports = self._collect_imports(message_def, all_messages, all_enums)
-        if imports:
-            lines.extend(self._generate_imports(imports))
-        
-        # 4. Java选项
-        if message_def.package_name:
-            lines.extend(self._generate_java_options(message_def.package_name))
-        
-        # 5. 消息定义
-        lines.extend(self._generate_message_definition(message_def, all_enums))
-        
-        return '\n'.join(lines)
+        try:
+            if not message_def:
+                raise ValueError("消息定义不能为空")
+            
+            if not message_def.name:
+                raise ValueError("消息名称不能为空")
+                
+            lines = []
+            
+            # 1. 文件头
+            lines.extend(self._generate_file_header())
+            
+            # 2. 包声明
+            if message_def.package_name:
+                lines.extend(self._generate_package_declaration(message_def.package_name))
+            
+            # 3. 导入语句
+            imports = self._collect_imports(message_def, all_messages, all_enums)
+            if imports:
+                lines.extend(self._generate_imports(imports))
+            
+            # 4. Java选项
+            if message_def.package_name:
+                lines.extend(self._generate_java_options(message_def.package_name))
+            
+            # 5. 消息定义
+            lines.extend(self._generate_message_definition(message_def, all_enums))
+            
+            return '\n'.join(lines)
+            
+        except Exception as e:
+            from utils.logger import get_logger
+            logger = get_logger("proto_generator")
+            logger.error(f"❌ 生成proto文件失败 {message_def.name if message_def else 'Unknown'}: {e}")
+            raise
     
     def generate_enum_proto_file(self, enum_def: EnumDefinition, 
                                 all_messages: Dict[str, MessageDefinition] = None,
@@ -76,23 +89,39 @@ class ProtoGenerator:
         Returns:
             完整的proto文件内容字符串
         """
-        lines = []
-        
-        # 1. 文件头
-        lines.extend(self._generate_file_header())
-        
-        # 2. 包声明
-        if enum_def.package_name:
-            lines.extend(self._generate_package_declaration(enum_def.package_name))
-        
-        # 3. Java选项
-        if enum_def.package_name:
-            lines.extend(self._generate_java_options(enum_def.package_name))
-        
-        # 4. 枚举定义
-        lines.extend(self._generate_enum_definition(enum_def))
-        
-        return '\n'.join(lines)
+        try:
+            if not enum_def:
+                raise ValueError("枚举定义不能为空")
+            
+            if not enum_def.name:
+                raise ValueError("枚举名称不能为空")
+                
+            if not enum_def.values:
+                raise ValueError(f"枚举 {enum_def.name} 没有定义任何值")
+                
+            lines = []
+            
+            # 1. 文件头
+            lines.extend(self._generate_file_header())
+            
+            # 2. 包声明
+            if enum_def.package_name:
+                lines.extend(self._generate_package_declaration(enum_def.package_name))
+            
+            # 3. Java选项
+            if enum_def.package_name:
+                lines.extend(self._generate_java_options(enum_def.package_name))
+            
+            # 4. 枚举定义
+            lines.extend(self._generate_enum_definition(enum_def))
+            
+            return '\n'.join(lines)
+            
+        except Exception as e:
+            from utils.logger import get_logger
+            logger = get_logger("proto_generator")
+            logger.error(f"❌ 生成枚举proto文件失败 {enum_def.name if enum_def else 'Unknown'}: {e}")
+            raise
     
     def generate_enums_file(self, enum_defs: List[EnumDefinition], package_name: str) -> str:
         """
@@ -219,12 +248,34 @@ class ProtoGenerator:
         Returns:
             字段定义字符串
         """
-        field_type = self._resolve_field_type(field, all_enums)
-        
-        if field.rule == 'repeated':
-            return f'  repeated {field_type} {field.name} = {field.tag};'
-        else:
-            return f'  {field_type} {field.name} = {field.tag};'
+        try:
+            if not field:
+                raise ValueError("字段定义不能为空")
+                
+            if not field.name:
+                raise ValueError("字段名称不能为空")
+                
+            if field.tag is None or field.tag <= 0:
+                raise ValueError(f"字段 {field.name} 的标签无效: {field.tag}")
+                
+            if not field.type_name:
+                raise ValueError(f"字段 {field.name} 的类型不能为空")
+            
+            field_type = self._resolve_field_type(field, all_enums)
+            
+            if not field_type:
+                raise ValueError(f"字段 {field.name} 无法解析类型: {field.type_name}")
+            
+            if field.rule == 'repeated':
+                return f'  repeated {field_type} {field.name} = {field.tag};'
+            else:
+                return f'  {field_type} {field.name} = {field.tag};'
+                
+        except Exception as e:
+            from utils.logger import get_logger
+            logger = get_logger("proto_generator")
+            logger.error(f"❌ 生成字段定义失败 {field.name if field else 'Unknown'}: {e}")
+            raise
     
     def _collect_imports(self, message_def: MessageDefinition, 
                         all_messages: Dict[str, MessageDefinition],

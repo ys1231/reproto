@@ -409,7 +409,7 @@ class ProtoReconstructor:
             target_package = '.'.join(first_class.split('.')[:-1])
         
         if not target_package:
-            self.logger.warning("⚠️  无法推断目标包名，跳过枚举解析")
+            self.logger.error("❌ 无法推断目标包名，跳过枚举解析")
             return
         
         # 解析目标包下的所有枚举
@@ -447,7 +447,7 @@ class ProtoReconstructor:
             if not java_file_path:
                 error_msg = "找不到对应的Java文件"
                 self.failed_classes[class_name] = error_msg
-                self.logger.warning(f"  ❌ {error_msg}: {class_name}")
+                self.logger.error(f"  ❌ {error_msg}: {class_name}")
                 return
             
             # 2. 尝试解析为枚举
@@ -464,7 +464,7 @@ class ProtoReconstructor:
             if not info_string:
                 error_msg = "无法从Java文件中提取protobuf信息"
                 self.failed_classes[class_name] = error_msg
-                self.logger.warning(f"  ❌ {error_msg}: {class_name}")
+                self.logger.error(f"  ❌ {error_msg}: {class_name}")
                 return
             
             # 4. 解码字节码为消息定义
@@ -481,7 +481,7 @@ class ProtoReconstructor:
             else:
                 error_msg = "字节码解码失败，可能不是protobuf消息类"
                 self.failed_classes[class_name] = error_msg
-                self.logger.warning(f"  ❌ {error_msg}: {class_name}")
+                self.logger.error(f"  ❌ {error_msg}: {class_name}")
                 
         except Exception as e:
             error_msg = f"处理异常: {str(e)}"
@@ -637,12 +637,12 @@ class ProtoReconstructor:
                     self.enum_definitions[enum_class_name] = enum_def
                     self.logger.info(f"    ✅ 成功处理枚举依赖: {enum_def.name} ({len(enum_def.values)} 个值)")
                 else:
-                    self.logger.warning(f"    ❌ 枚举值解析失败: {enum_file_path}")
+                    self.logger.error(f"    ❌ 枚举值解析失败: {enum_file_path}")
             else:
-                self.logger.warning(f"    ❌ 未找到枚举文件: {type_name}")
+                self.logger.error(f"    ❌ 未找到枚举文件: {type_name}")
                     
         except Exception as e:
-            self.logger.warning(f"  ⚠️ 处理枚举依赖失败 {type_name}: {e}")
+            self.logger.error(f"  ❌ 处理枚举依赖失败 {type_name}: {e}")
             import traceback
             self.logger.debug(f"  详细错误: {traceback.format_exc()}")
     
