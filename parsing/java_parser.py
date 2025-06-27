@@ -224,7 +224,7 @@ class JavaParser:
         return (
             'implements Internal.EnumLite' in content and
             'enum ' in content and
-            'forNumber(' in content
+            ('forNumber(' in content or 'getNumber()' in content)
         )
     
     def _extract_enum_values(self, content: str) -> List[tuple]:

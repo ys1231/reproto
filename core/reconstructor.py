@@ -10,6 +10,7 @@ Author: AI Assistant
 """
 
 import re
+import os
 from pathlib import Path
 from collections import deque
 from typing import Set, Dict, List, Optional, Tuple
@@ -507,6 +508,18 @@ class ProtoReconstructor:
                 self.pending_classes.append(dep)
                 self.logger.info(f"  🔗 发现依赖: {dep}")
                 
+        # 处理枚举依赖
+        self.logger.info(f"  🔍 开始处理枚举依赖...")
+        enum_count = 0
+        for field in message_def.fields:
+            if self._is_enum_type(field.type_name):
+                self.logger.info(f"  🔢 发现枚举字段: {field.name} -> {field.type_name}")
+                self._process_enum_dependency(field.type_name)
+                enum_count += 1
+        
+        if enum_count == 0:
+            self.logger.info(f"  📊 未发现枚举依赖")
+                
     def _extract_dependencies(self, message_def: MessageDefinition) -> List[str]:
         """
         从消息定义中提取所有依赖的类名
@@ -535,7 +548,7 @@ class ProtoReconstructor:
     
     def _extract_field_dependencies(self, type_name: str, current_package: str) -> List[str]:
         """
-        从字段类型中提取所有依赖（包括map类型的键值类型）
+        从字段类型中提取所有依赖（包括map类型的键值类型和枚举类型）
         
         Args:
             type_name: 字段类型名
@@ -561,11 +574,167 @@ class ProtoReconstructor:
             
         # 处理普通类型
         else:
-            dep = self._resolve_field_dependency(type_name, current_package)
-            if dep:
-                dependencies.append(dep)
+            # 检查是否为枚举类型（以Enum开头或已知的枚举模式）
+            if self._is_enum_type(type_name):
+                # 直接处理枚举类型，尝试解析并添加到枚举定义中
+                self._process_enum_dependency(type_name)
+            else:
+                # 处理消息类型依赖
+                dep = self._resolve_field_dependency(type_name, current_package)
+                if dep:
+                    dependencies.append(dep)
         
         return dependencies
+    
+    def _is_enum_type(self, type_name: str) -> bool:
+        """
+        判断类型名是否为枚举类型
+        
+        Args:
+            type_name: 类型名
+            
+        Returns:
+            是否为枚举类型
+        """
+        # 检查是否以Enum开头（混淆后的枚举名）
+        if type_name.startswith('Enum'):
+            return True
+        
+        # 检查是否在已知的枚举类型列表中
+        # 这里可以添加更多的枚举类型判断逻辑
+        return False
+    
+    def _process_enum_dependency(self, type_name: str) -> None:
+        """
+        处理枚举依赖，查找并解析枚举类
+        
+        Args:
+            type_name: 枚举类型名
+        """
+        try:
+            self.logger.info(f"    🔍 搜索枚举文件: {type_name}")
+            # 尝试在所有包中查找这个枚举类
+            enum_file_path = self._find_enum_file(type_name)
+            if enum_file_path:
+                self.logger.info(f"    ✅ 找到枚举文件: {enum_file_path}")
+                # 解析枚举文件
+                enum_values = self.java_parser.parse_enum_file(enum_file_path)
+                if enum_values:
+                    # 构造完整的枚举类名
+                    enum_class_name = self._get_enum_class_name_from_path(enum_file_path)
+                    self.logger.info(f"    📝 枚举类名: {enum_class_name}")
+                    
+                    # 创建枚举定义
+                    enum_def = self._create_enum_definition(enum_class_name, enum_values)
+                    
+                    # 检查是否有原始名称，如果有则使用原始名称
+                    original_name = self._extract_original_enum_name(enum_file_path)
+                    if original_name:
+                        self.logger.info(f"    🏷️ 使用原始名称: {original_name}")
+                        enum_def.name = original_name
+                    
+                    # 添加到枚举定义中
+                    self.enum_definitions[enum_class_name] = enum_def
+                    self.logger.info(f"    ✅ 成功处理枚举依赖: {enum_def.name} ({len(enum_def.values)} 个值)")
+                else:
+                    self.logger.warning(f"    ❌ 枚举值解析失败: {enum_file_path}")
+            else:
+                self.logger.warning(f"    ❌ 未找到枚举文件: {type_name}")
+                    
+        except Exception as e:
+            self.logger.warning(f"  ⚠️ 处理枚举依赖失败 {type_name}: {e}")
+            import traceback
+            self.logger.debug(f"  详细错误: {traceback.format_exc()}")
+    
+    def _find_enum_file(self, type_name: str) -> Optional[Path]:
+        """
+        在所有包中查找枚举文件
+        
+        Args:
+            type_name: 枚举类型名
+            
+        Returns:
+            枚举文件路径或None
+        """
+        # 在整个源码目录中搜索匹配的枚举文件
+        for root, dirs, files in os.walk(self.sources_dir):
+            for file in files:
+                if file.endswith('.java') and type_name in file:
+                    file_path = Path(root) / file
+                    # 检查是否确实是这个枚举类
+                    if self._is_target_enum_file(file_path, type_name):
+                        return file_path
+        return None
+    
+    def _is_target_enum_file(self, file_path: Path, type_name: str) -> bool:
+        """
+        检查文件是否是目标枚举类
+        
+        Args:
+            file_path: Java文件路径
+            type_name: 目标枚举类型名
+            
+        Returns:
+            是否为目标枚举文件
+        """
+        try:
+            content = file_path.read_text(encoding='utf-8')
+            # 检查是否包含目标枚举类声明
+            enum_pattern = f'public\\s+enum\\s+{re.escape(type_name)}\\s+implements\\s+Internal\\.EnumLite'
+            return bool(re.search(enum_pattern, content))
+        except Exception:
+            return False
+    
+    def _get_enum_class_name_from_path(self, file_path: Path) -> str:
+        """
+        从文件路径构造完整的枚举类名
+        
+        Args:
+            file_path: 枚举文件路径
+            
+        Returns:
+            完整的枚举类名
+        """
+        # 获取相对于源码目录的路径
+        relative_path = file_path.relative_to(self.sources_dir)
+        
+        # 移除.java后缀并转换为类名
+        class_path = str(relative_path)[:-5]  # 移除.java
+        class_name = class_path.replace('/', '.')
+        
+        return class_name
+    
+    def _extract_original_enum_name(self, file_path: Path) -> Optional[str]:
+        """
+        从Java源码中提取实际的枚举类名
+        
+        Args:
+            file_path: Java文件路径
+            
+        Returns:
+            Java源码中定义的实际枚举类名
+        """
+        try:
+            content = file_path.read_text(encoding='utf-8')
+            
+            # 查找枚举类定义: public enum ClassName 或 enum ClassName
+            enum_pattern = r'(?:public\s+)?enum\s+(\w+)'
+            match = re.search(enum_pattern, content)
+            
+            if match:
+                enum_name = match.group(1)
+                self.logger.info(f"    🏷️ 从Java源码提取枚举名: {enum_name}")
+                return enum_name
+            else:
+                # 如果没找到enum定义，可能是接口或其他类型，使用文件名
+                file_name = file_path.stem
+                self.logger.info(f"    🏷️ 未找到enum定义，使用文件名: {file_name}")
+                return file_name
+                
+        except Exception as e:
+            self.logger.debug(f"    提取枚举名失败: {e}")
+            # 出错时使用文件名作为fallback
+            return file_path.stem
     
     def _parse_map_types(self, map_content: str) -> tuple:
         """
@@ -1143,7 +1312,7 @@ class ProtoReconstructor:
         try:
             # 生成proto文件内容
             proto_content = self.proto_generator.generate_proto_file(
-                message_def, self.message_definitions
+                message_def, self.message_definitions, self.enum_definitions
             )
             
             # 确定输出路径并创建目录
