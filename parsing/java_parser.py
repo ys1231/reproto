@@ -359,9 +359,8 @@ class JavaParser:
         """
         从Java文件中提取字段标签信息
         
-        解析类似这样的常量定义：
-        public static final int TEXT_FIELD_NUMBER = 1;
-        public static final int ISFINAL_FIELD_NUMBER = 2;
+        优先从Java源码中直接找到字段名与标签的对应关系，
+        而不是依赖常量名的转换推测
         
         Args:
             java_file_path: Java文件路径
@@ -373,64 +372,238 @@ class JavaParser:
             # 读取Java文件内容
             content = java_file_path.read_text(encoding='utf-8')
             
-            # 匹配字段标签常量定义
-            # 格式：public static final int FIELD_NAME_FIELD_NUMBER = 数字;
-            field_tag_pattern = re.compile(
-                r'public\s+static\s+final\s+int\s+'
-                r'([A-Z_]+)_FIELD_NUMBER\s*=\s*(\d+)\s*;'
-            )
+            # 方法1：直接从源码中找到字段声明和对应的FIELD_NUMBER常量
+            field_tags = self._extract_field_tags_from_source(content)
             
-            field_tags = {}
+            if field_tags:
+                return field_tags
             
-            # 查找所有字段标签定义
-            for match in field_tag_pattern.finditer(content):
-                field_const_name = match.group(1)  # 如 TEXT, ISFINAL
-                tag_value = int(match.group(2))     # 如 1, 2
-                
-                # 转换常量名为字段名
-                # TEXT -> text_, ISFINAL -> isFinal_
-                field_name = self._const_name_to_field_name(field_const_name)
-                field_tags[field_name] = tag_value
-                
-                self.logger.debug(f"    🏷️ 提取字段标签: {field_name} = {tag_value}")
-            
-            return field_tags if field_tags else None
+            # 方法2：如果方法1失败，回退到常量名转换方法
+            return self._extract_field_tags_from_constants(content)
             
         except Exception as e:
             self.logger.error(f"❌ 提取字段标签失败 {java_file_path}: {e}")
             return None
     
-    def _const_name_to_field_name(self, const_name: str) -> str:
+    def _extract_field_tags_from_source(self, content: str) -> Optional[dict]:
         """
-        将常量名转换为字段名
+        直接从Java源码中提取字段名和标签的对应关系
+        
+        通过分析实际的字段声明和常量定义来建立准确的映射
         
         Args:
-            const_name: 常量名（如 TEXT, ISFINAL, PAYLOADTYPE, USERID, INSTALLATIONID）
+            content: Java文件内容
             
         Returns:
-            字段名（如 text_, isFinal_, payloadType_, userId_, installationId_）
+            字段标签映射 {field_name: tag} 或 None
         """
-        # 特殊处理一些常见模式
-        special_cases = {
-            'ISFINAL': 'isFinal',
-            'PAYLOADTYPE': 'payloadType',
-            'TERMINATIONREASON': 'terminationReason',
-            'USERID': 'userId',
-            'INSTALLATIONID': 'installationId',
-            'PHONENUMBER': 'phoneNumber',
-            'COUNTRYCODE': 'countryCode',
-        }
+        # 提取所有字段声明
+        field_declarations = self._extract_all_field_declarations(content)
         
-        if const_name in special_cases:
-            return special_cases[const_name] + '_'
+        # 提取所有FIELD_NUMBER常量
+        field_constants = self._extract_field_number_constants(content)
         
-        # 通用转换：将UPPER_CASE转换为camelCase
+        if not field_declarations or not field_constants:
+            return None
+        
+        # 建立字段名到标签的映射
+        field_tags = {}
+        
+        # 尝试通过字段名匹配找到对应的常量
+        for field_name in field_declarations:
+            # 生成可能的常量名
+            possible_const_names = self._generate_possible_constant_names(field_name)
+            
+            # 查找匹配的常量
+            for const_name in possible_const_names:
+                if const_name in field_constants:
+                    field_tags[field_name] = field_constants[const_name]
+                    self.logger.debug(f"    🎯 直接匹配字段: {field_name} -> {const_name} = {field_constants[const_name]}")
+                    break
+        
+        return field_tags if field_tags else None
+    
+    def _extract_all_field_declarations(self, content: str) -> List[str]:
+        """
+        提取所有字段声明
+        
+        Args:
+            content: Java文件内容
+            
+        Returns:
+            字段名列表
+        """
+        field_pattern = re.compile(
+            r'private\s+(?:static\s+)?(?:final\s+)?'  # 访问修饰符
+            r'[^\s]+(?:<[^>]*>)?(?:\[\])?'             # 类型（包括泛型和数组）
+            r'\s+([a-zA-Z_][a-zA-Z0-9_]*_?)\s*[=;]',  # 字段名
+            re.MULTILINE
+        )
+        
+        field_names = []
+        for match in field_pattern.finditer(content):
+            field_name = match.group(1)
+            # 跳过明显的常量字段（全大写）
+            if not field_name.isupper() and not field_name.startswith('DEFAULT_'):
+                field_names.append(field_name)
+        
+        return field_names
+    
+    def _extract_field_number_constants(self, content: str) -> dict:
+        """
+        提取所有FIELD_NUMBER常量
+        
+        Args:
+            content: Java文件内容
+            
+        Returns:
+            常量名到值的映射 {const_name: value}
+        """
+        field_tag_pattern = re.compile(
+            r'\s*public\s+static\s+final\s+int\s+'  # 允许行首有空白字符
+            r'([A-Z0-9_]+)_FIELD_NUMBER\s*=\s*(\d+)\s*;'  # 允许常量名包含数字
+        )
+        
+        constants = {}
+        for match in field_tag_pattern.finditer(content):
+            const_name = match.group(1)
+            tag_value = int(match.group(2))
+            constants[const_name] = tag_value
+        
+        return constants
+    
+    def _generate_possible_constant_names(self, field_name: str) -> List[str]:
+        """
+        根据字段名生成可能的常量名
+        
+        Args:
+            field_name: 字段名（如 e164Format_, telType_）
+            
+        Returns:
+            可能的常量名列表
+        """
+        # 移除末尾的下划线
+        clean_name = field_name.rstrip('_')
+        
+        possible_names = []
+        
+        # 方法1：直接转换为大写
+        # e164Format -> E164FORMAT
+        possible_names.append(clean_name.upper())
+        
+        # 方法2：在camelCase边界添加下划线
+        # e164Format -> E164_FORMAT
+        camel_to_snake = re.sub('([a-z0-9])([A-Z])', r'\1_\2', clean_name).upper()
+        possible_names.append(camel_to_snake)
+        
+        # 方法3：处理数字和字母的边界
+        # e164Format -> E_164_FORMAT
+        with_number_boundaries = re.sub('([a-zA-Z])([0-9])', r'\1_\2', clean_name)
+        with_number_boundaries = re.sub('([0-9])([a-zA-Z])', r'\1_\2', with_number_boundaries)
+        with_number_boundaries = re.sub('([a-z])([A-Z])', r'\1_\2', with_number_boundaries).upper()
+        possible_names.append(with_number_boundaries)
+        
+        return list(set(possible_names))  # 去重
+    
+    def _extract_field_tags_from_constants(self, content: str) -> Optional[dict]:
+        """
+        从常量定义中提取字段标签（回退方法）
+        
+        Args:
+            content: Java文件内容
+            
+        Returns:
+            字段标签映射 {field_name: tag} 或 None
+        """
+        # 匹配字段标签常量定义
+        field_tag_pattern = re.compile(
+            r'\s*public\s+static\s+final\s+int\s+'  # 允许行首有空白字符
+            r'([A-Z0-9_]+)_FIELD_NUMBER\s*=\s*(\d+)\s*;'  # 允许常量名包含数字
+        )
+        
+        field_tags = {}
+        
+        # 查找所有字段标签定义
+        for match in field_tag_pattern.finditer(content):
+            field_const_name = match.group(1)  # 如 TEXT, ISFINAL
+            tag_value = int(match.group(2))     # 如 1, 2
+            
+            # 转换常量名为字段名
+            field_name = self._const_name_to_field_name(field_const_name)
+            field_tags[field_name] = tag_value
+            
+            self.logger.debug(f"    🔄 回退转换字段标签: {field_name} = {tag_value}")
+        
+        return field_tags if field_tags else None
+    
+    def _const_name_to_field_name(self, const_name: str) -> str:
+        """
+        将常量名转换为字段名（通用算法，无硬编码）
+        
+        Args:
+            const_name: 常量名（如 TEXT, ISFINAL, PAYLOADTYPE, E164_FORMAT）
+            
+        Returns:
+            字段名（如 text_, isFinal_, payloadType_, e164Format_）
+        """
+        # 通用转换算法：将UPPER_CASE转换为camelCase
         if '_' in const_name:
-            # 处理下划线分隔的常量名
+            # 处理下划线分隔的常量名：E164_FORMAT -> e164Format
             parts = const_name.lower().split('_')
             field_name = parts[0] + ''.join(word.capitalize() for word in parts[1:])
         else:
-            # 处理单个单词的常量名
-            field_name = const_name.lower()
+            # 处理单个单词的常量名：TEXT -> text
+            # 处理复合词常量名：ISFINAL -> isFinal, PAYLOADTYPE -> payloadType
+            field_name = self._split_compound_word(const_name)
         
-        return field_name + '_' 
+        return field_name + '_'
+    
+    def _split_compound_word(self, word: str) -> str:
+        """
+        智能分割复合词并转换为camelCase
+        
+        Args:
+            word: 大写复合词（如 ISFINAL, PAYLOADTYPE, USERID）
+            
+        Returns:
+            camelCase格式的字段名（如 isFinal, payloadType, userId）
+        """
+        # 将单词转换为小写
+        word_lower = word.lower()
+        
+        # 使用启发式规则分割复合词
+        # 这些是常见的英语词汇模式，无需硬编码特定应用的词汇
+        common_prefixes = ['is', 'has', 'can', 'should', 'will', 'get', 'set']
+        common_suffixes = ['type', 'id', 'code', 'number', 'name', 'data', 'info', 'status', 'mode', 'format']
+        
+        # 检查前缀模式
+        for prefix in common_prefixes:
+            if word_lower.startswith(prefix) and len(word_lower) > len(prefix):
+                rest = word_lower[len(prefix):]
+                return prefix + rest.capitalize()
+        
+        # 检查后缀模式
+        for suffix in common_suffixes:
+            if word_lower.endswith(suffix) and len(word_lower) > len(suffix):
+                prefix_part = word_lower[:-len(suffix)]
+                return prefix_part + suffix.capitalize()
+        
+        # 如果没有匹配的模式，尝试基于常见的英语单词边界进行分割
+        # 这里可以使用更复杂的NLP技术，但为了保持简单，使用基本的启发式
+        
+        # 检查常见的双词组合模式
+        if len(word_lower) >= 6:
+            # 尝试在中间位置分割
+            mid_point = len(word_lower) // 2
+            for i in range(max(3, mid_point - 2), min(len(word_lower) - 2, mid_point + 3)):
+                first_part = word_lower[:i]
+                second_part = word_lower[i:]
+                
+                # 检查是否是合理的分割（基于常见英语单词长度）
+                if (3 <= len(first_part) <= 8 and 3 <= len(second_part) <= 8 and
+                    not first_part.endswith(second_part[:2]) and  # 避免重复
+                    not second_part.startswith(first_part[-2:])):  # 避免重复
+                    return first_part + second_part.capitalize()
+        
+        # 如果无法智能分割，直接返回小写形式
+        return word_lower 

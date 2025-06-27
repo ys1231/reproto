@@ -404,18 +404,39 @@ class InfoDecoder:
         
         # 基础类型映射
         basic_types = {
+            # Java基础类型
             'int': 'int32',
             'long': 'int64', 
             'float': 'float',
             'double': 'double',
             'boolean': 'bool',
+            'byte': 'int32',
+            'short': 'int32',
+            'char': 'int32',
+            
+            # Java包装类型
+            'Integer': 'int32',
+            'Long': 'int64',
+            'Float': 'float',
+            'Double': 'double',
+            'Boolean': 'bool',
+            'Byte': 'int32',
+            'Short': 'int32',
+            'Character': 'int32',
             'String': 'string',
+            
+            # Java完整类名
             'java.lang.String': 'string',
             'java.lang.Integer': 'int32',
             'java.lang.Long': 'int64',
             'java.lang.Float': 'float',
             'java.lang.Double': 'double',
             'java.lang.Boolean': 'bool',
+            'java.lang.Byte': 'int32',
+            'java.lang.Short': 'int32',
+            'java.lang.Character': 'int32',
+            
+            # 特殊类型
             'byte[]': 'bytes',
             'ByteString': 'bytes',
             'com.google.protobuf.ByteString': 'bytes',

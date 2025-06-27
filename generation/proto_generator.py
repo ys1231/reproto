@@ -411,13 +411,55 @@ class ProtoGenerator:
             基础proto类型，如果不是基础类型则返回None
         """
         basic_type_mapping = {
+            # Protobuf标准类型
             'string': 'string',
             'int32': 'int32',
             'int64': 'int64',
+            'uint32': 'uint32',
+            'uint64': 'uint64',
+            'sint32': 'sint32',
+            'sint64': 'sint64',
+            'fixed32': 'fixed32',
+            'fixed64': 'fixed64',
+            'sfixed32': 'sfixed32',
+            'sfixed64': 'sfixed64',
             'bool': 'bool',
             'float': 'float',
             'double': 'double',
             'bytes': 'bytes',
+            
+            # Java基础类型映射到protobuf类型
+            'int': 'int32',           # Java int -> protobuf int32
+            'long': 'int64',          # Java long -> protobuf int64
+            'boolean': 'bool',        # Java boolean -> protobuf bool
+            'byte': 'int32',          # Java byte -> protobuf int32
+            'short': 'int32',         # Java short -> protobuf int32
+            'char': 'int32',          # Java char -> protobuf int32
+            
+            # Java包装类型映射
+            'Integer': 'int32',       # Java Integer -> protobuf int32
+            'Long': 'int64',          # Java Long -> protobuf int64
+            'Boolean': 'bool',        # Java Boolean -> protobuf bool
+            'Float': 'float',         # Java Float -> protobuf float
+            'Double': 'double',       # Java Double -> protobuf double
+            'Byte': 'int32',          # Java Byte -> protobuf int32
+            'Short': 'int32',         # Java Short -> protobuf int32
+            'Character': 'int32',     # Java Character -> protobuf int32
+            
+            # Java完整类名映射
+            'java.lang.String': 'string',
+            'java.lang.Integer': 'int32',
+            'java.lang.Long': 'int64',
+            'java.lang.Boolean': 'bool',
+            'java.lang.Float': 'float',
+            'java.lang.Double': 'double',
+            'java.lang.Byte': 'int32',
+            'java.lang.Short': 'int32',
+            'java.lang.Character': 'int32',
+            
+            # Protobuf特殊类型
+            'ByteString': 'bytes',
+            'com.google.protobuf.ByteString': 'bytes',
         }
         return basic_type_mapping.get(type_name)
     
