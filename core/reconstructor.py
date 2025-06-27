@@ -12,7 +12,7 @@ Author: AI Assistant
 import re
 from pathlib import Path
 from collections import deque
-from typing import Set, Dict, List, Optional
+from typing import Set, Dict, List, Optional, Tuple
 
 from parsing.java_parser import JavaParser
 from parsing.enum_parser import EnumParser
@@ -20,6 +20,8 @@ from core.info_decoder import InfoDecoder
 from generation.proto_generator import ProtoGenerator
 from models.message_definition import MessageDefinition, EnumDefinition, EnumValueDefinition
 from utils.logger import get_logger
+from utils.file_cache import get_file_cache
+from utils.type_utils import type_mapper, naming_converter
 
 
 class JavaSourceAnalyzer:
@@ -32,7 +34,6 @@ class JavaSourceAnalyzer:
         # 初始化JavaParser用于字段类型解析
         self.java_parser = JavaParser()
         # 使用文件缓存系统优化I/O性能
-        from utils.file_cache import get_file_cache
         self.file_cache = get_file_cache()
     
     def set_current_class(self, class_name: str):
@@ -186,41 +187,9 @@ class JavaSourceAnalyzer:
             java_type: Java类型名
             
         Returns:
-            protobuf类型名
+            对应的protobuf类型名
         """
-        if not java_type:
-            return 'string'
-        
-        # 基础类型映射
-        basic_types = {
-            'int': 'int32',
-            'long': 'int64', 
-            'float': 'float',
-            'double': 'double',
-            'boolean': 'bool',
-            'String': 'string',
-            'java.lang.String': 'string',
-            'java.lang.Integer': 'int32',
-            'java.lang.Long': 'int64',
-            'java.lang.Float': 'float',
-            'java.lang.Double': 'double',
-            'java.lang.Boolean': 'bool',
-            'byte[]': 'bytes',
-            'ByteString': 'bytes',
-            'com.google.protobuf.ByteString': 'bytes',
-        }
-        
-        # 检查是否为基础类型
-        if java_type in basic_types:
-            return basic_types[java_type]
-        
-        # 如果是完整的类名，提取简单类名
-        if '.' in java_type:
-            simple_name = java_type.split('.')[-1]
-            return simple_name
-        
-        # 默认返回原类型名
-        return java_type
+        return type_mapper.java_to_proto_type(java_type)
 
     def _get_type_from_setter(self, field_name: str) -> Optional[str]:
         """
@@ -633,7 +602,7 @@ class ProtoReconstructor:
     
     def _should_skip_class(self, class_name: str) -> bool:
         """
-        判断是否应该跳过某个类
+        判断是否应该跳过某个类的处理
         
         Args:
             class_name: 类名
@@ -641,27 +610,15 @@ class ProtoReconstructor:
         Returns:
             是否应该跳过
         """
-        # 跳过已经处理过的类
+        # 已处理过的类
         if class_name in self.processed_classes:
             return True
-            
-        # 跳过基础类型（包括Java基础类型和常见的系统类型）
-        basic_types = {
-            # Java基础类型
-            'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
-            'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
-            'Byte', 'Short', 'Character',
-            # Java系统类型
-            'java.lang.String', 'java.lang.Integer', 'java.lang.Long', 
-            'java.lang.Boolean', 'java.lang.Float', 'java.lang.Double',
-            'java.lang.Object', 'java.util.List', 'java.util.Map',
-            'com.google.protobuf.ByteString', 'com.google.protobuf.MessageLite'
-        }
         
-        if class_name in basic_types:
+        # 使用TypeMapper判断基础类型和系统包
+        if type_mapper.is_java_basic_type(class_name) or type_mapper.is_system_package(class_name):
             return True
             
-        # 跳过明显的系统类型和内部类型
+        # 跳过明显不是protobuf类的包
         if self._is_system_or_internal_type(class_name):
             return True
             
@@ -764,12 +721,7 @@ class ProtoReconstructor:
             return None
             
         # 检查是否为基础类型
-        basic_proto_types = {
-            'string', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
-            'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'float', 'double', 'bytes'
-        }
-        
-        if type_name in basic_proto_types:
+        if type_mapper.is_basic_proto_type(type_name):
             return None
             
         # 如果已经是完整类名，直接返回
@@ -857,7 +809,7 @@ class ProtoReconstructor:
                 return candidate
         
         return None
-    
+
     def _generate_candidate_packages(self, current_package: str) -> List[str]:
         """
         动态生成候选包名列表
@@ -1342,8 +1294,4 @@ class ProtoReconstructor:
         Returns:
             蛇形命名字符串
         """
-        # 处理连续大写字母：XMLParser -> XML_Parser
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', camel_str)
-        # 处理小写字母后跟大写字母：userId -> user_Id
-        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-        return s2.lower() 
+        return naming_converter.to_snake_case(camel_str) 

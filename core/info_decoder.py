@@ -13,10 +13,12 @@ Author: AI Assistant
 """
 
 import re
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
+from pathlib import Path
 
 from models.message_definition import MessageDefinition, FieldDefinition, OneofDefinition
 from utils.logger import get_logger
+from utils.type_utils import type_mapper, naming_converter
 
 
 class InfoDecoder:
@@ -364,95 +366,15 @@ class InfoDecoder:
     
     def _convert_java_to_proto_type(self, java_type: str) -> str:
         """
-        将Java类型转换为Protobuf类型
+        将Java类型转换为protobuf类型
         
         Args:
-            java_type: Java类型字符串
+            java_type: Java类型名
             
         Returns:
-            转换后的Protobuf类型
+            对应的protobuf类型名
         """
-        if not java_type:
-            return 'string'
-        
-        # 处理Internal.ProtobufList<T>类型
-        if java_type.startswith('Internal.ProtobufList<') and java_type.endswith('>'):
-            element_type = java_type[len('Internal.ProtobufList<'):-1]
-            # 递归处理元素类型
-            return self._convert_java_to_proto_type(element_type)
-        
-        # 处理MapFieldLite<K, V>类型，返回map<k, v>格式
-        if java_type.startswith('MapFieldLite<') and java_type.endswith('>'):
-            inner_types = java_type[len('MapFieldLite<'):-1]
-            # 解析键值类型
-            parts = self._parse_generic_types(inner_types)
-            if len(parts) == 2:
-                key_type = self._convert_java_to_proto_type(parts[0].strip())
-                value_type = self._convert_java_to_proto_type(parts[1].strip())
-                return f"map<{key_type}, {value_type}>"
-        
-        # 处理List<T>类型
-        if java_type.startswith('List<') and java_type.endswith('>'):
-            element_type = java_type[len('List<'):-1]
-            return self._convert_java_to_proto_type(element_type)
-        
-        # 处理Internal.IntList类型（通常对应枚举列表）
-        if java_type == 'Internal.IntList':
-            # 这种情况需要从上下文获取真正的枚举类型
-            # 返回特殊标记，让调用方进行进一步处理
-            return 'Internal.IntList'
-        
-        # 基础类型映射
-        basic_types = {
-            # Java基础类型
-            'int': 'int32',
-            'long': 'int64', 
-            'float': 'float',
-            'double': 'double',
-            'boolean': 'bool',
-            'byte': 'int32',
-            'short': 'int32',
-            'char': 'int32',
-            
-            # Java包装类型
-            'Integer': 'int32',
-            'Long': 'int64',
-            'Float': 'float',
-            'Double': 'double',
-            'Boolean': 'bool',
-            'Byte': 'int32',
-            'Short': 'int32',
-            'Character': 'int32',
-            'String': 'string',
-            
-            # Java完整类名
-            'java.lang.String': 'string',
-            'java.lang.Integer': 'int32',
-            'java.lang.Long': 'int64',
-            'java.lang.Float': 'float',
-            'java.lang.Double': 'double',
-            'java.lang.Boolean': 'bool',
-            'java.lang.Byte': 'int32',
-            'java.lang.Short': 'int32',
-            'java.lang.Character': 'int32',
-            
-            # 特殊类型
-            'byte[]': 'bytes',
-            'ByteString': 'bytes',
-            'com.google.protobuf.ByteString': 'bytes',
-        }
-        
-        # 检查是否为基础类型
-        if java_type in basic_types:
-            return basic_types[java_type]
-        
-        # 如果是完整的类名，提取简单类名
-        if '.' in java_type:
-            simple_name = java_type.split('.')[-1]
-            return simple_name
-        
-        # 默认返回原类型名
-        return java_type
+        return type_mapper.java_to_proto_type(java_type)
     
     def _parse_fields_from_bytecode(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str], field_start: int) -> None:
         """
@@ -1006,25 +928,12 @@ class InfoDecoder:
                 return None
             
             # 将Java类型转换为proto类型
-            proto_type = self._java_type_to_proto_type(java_raw_type)
+            proto_type = self._convert_java_to_proto_type(java_raw_type)
             return proto_type
             
         except Exception as e:
             self.logger.debug(f"    ⚠️  获取Java字段类型失败: {e}")
             return None
-    
-    def _java_type_to_proto_type(self, java_type: str) -> str:
-        """
-        将Java类型转换为proto类型
-        
-        Args:
-            java_type: Java类型字符串
-            
-        Returns:
-            对应的proto类型
-        """
-        # 使用内部的类型转换方法
-        return self._convert_java_to_proto_type(java_type)
     
     def _analyze_unknown_type_by_wire_type(self, wire_type: int, objects: List[str], object_index: int, field_type_byte: int) -> str:
         """
@@ -1168,11 +1077,7 @@ class InfoDecoder:
         Returns:
             蛇形命名字符串
         """
-        # 处理连续大写字母：XMLParser -> XML_Parser
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', camel_str)
-        # 处理小写字母后跟大写字母：userId -> user_Id
-        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-        return s2.lower()
+        return naming_converter.to_snake_case(camel_str)
 
     def _is_internal_field(self, field_name_raw: str) -> bool:
         """

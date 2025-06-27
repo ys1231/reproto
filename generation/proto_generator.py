@@ -11,6 +11,7 @@ Author: AI Assistant
 import re
 from typing import Dict, Set, List, Union
 from models.message_definition import MessageDefinition, FieldDefinition, EnumDefinition, EnumValueDefinition
+from utils.type_utils import type_mapper, naming_converter, field_name_processor
 
 
 class ProtoGenerator:
@@ -410,58 +411,7 @@ class ProtoGenerator:
         Returns:
             基础proto类型，如果不是基础类型则返回None
         """
-        basic_type_mapping = {
-            # Protobuf标准类型
-            'string': 'string',
-            'int32': 'int32',
-            'int64': 'int64',
-            'uint32': 'uint32',
-            'uint64': 'uint64',
-            'sint32': 'sint32',
-            'sint64': 'sint64',
-            'fixed32': 'fixed32',
-            'fixed64': 'fixed64',
-            'sfixed32': 'sfixed32',
-            'sfixed64': 'sfixed64',
-            'bool': 'bool',
-            'float': 'float',
-            'double': 'double',
-            'bytes': 'bytes',
-            
-            # Java基础类型映射到protobuf类型
-            'int': 'int32',           # Java int -> protobuf int32
-            'long': 'int64',          # Java long -> protobuf int64
-            'boolean': 'bool',        # Java boolean -> protobuf bool
-            'byte': 'int32',          # Java byte -> protobuf int32
-            'short': 'int32',         # Java short -> protobuf int32
-            'char': 'int32',          # Java char -> protobuf int32
-            
-            # Java包装类型映射
-            'Integer': 'int32',       # Java Integer -> protobuf int32
-            'Long': 'int64',          # Java Long -> protobuf int64
-            'Boolean': 'bool',        # Java Boolean -> protobuf bool
-            'Float': 'float',         # Java Float -> protobuf float
-            'Double': 'double',       # Java Double -> protobuf double
-            'Byte': 'int32',          # Java Byte -> protobuf int32
-            'Short': 'int32',         # Java Short -> protobuf int32
-            'Character': 'int32',     # Java Character -> protobuf int32
-            
-            # Java完整类名映射
-            'java.lang.String': 'string',
-            'java.lang.Integer': 'int32',
-            'java.lang.Long': 'int64',
-            'java.lang.Boolean': 'bool',
-            'java.lang.Float': 'float',
-            'java.lang.Double': 'double',
-            'java.lang.Byte': 'int32',
-            'java.lang.Short': 'int32',
-            'java.lang.Character': 'int32',
-            
-            # Protobuf特殊类型
-            'ByteString': 'bytes',
-            'com.google.protobuf.ByteString': 'bytes',
-        }
-        return basic_type_mapping.get(type_name)
+        return type_mapper.java_to_proto_type(type_name) if type_mapper.is_java_basic_type(type_name) else None
     
     def _generate_enum_type_name(self, field_name: str) -> str:
         """
@@ -473,33 +423,7 @@ class ProtoGenerator:
         Returns:
             枚举类型名（PascalCase）
         """
-        name = field_name.rstrip('_')
-        
-        # 特殊字段名修正
-        field_name_corrections = {
-            'access': 'Access',  # 修正拼写
-        }
-        
-        if name in field_name_corrections:
-            return field_name_corrections[name]
-        
-        # 处理常见的枚举后缀
-        suffix_mappings = {
-            '_type': 'Type',
-            '_status': 'Status',
-            '_code': 'Code'
-        }
-        
-        for suffix, replacement in suffix_mappings.items():
-            if name.endswith(suffix):
-                name = name[:-len(suffix)] + replacement
-                break
-        
-        # 处理复数形式：badges -> badge
-        if name.endswith('s') and len(name) > 1:
-            name = name[:-1]
-        
-        return self._to_pascal_case(name)
+        return field_name_processor.generate_type_name_from_field(field_name, 'enum')
     
     def _generate_message_type_name(self, field_name: str) -> str:
         """
@@ -511,23 +435,7 @@ class ProtoGenerator:
         Returns:
             消息类型名（PascalCase）
         """
-        name = field_name.rstrip('_')
-        
-        # 处理常见的消息后缀
-        suffix_mappings = {
-            '_info': 'Info',
-            '_data': 'Data',
-            '_stats': 'Stats',
-            '_profile': 'Profile',
-            '_config': 'Config'
-        }
-        
-        for suffix, replacement in suffix_mappings.items():
-            if name.endswith(suffix):
-                name = name[:-len(suffix)] + replacement
-                break
-        
-        return self._to_pascal_case(name)
+        return field_name_processor.generate_type_name_from_field(field_name, 'message')
     
     @staticmethod
     def _to_pascal_case(snake_str: str) -> str:
@@ -540,8 +448,7 @@ class ProtoGenerator:
         Returns:
             帕斯卡命名字符串
         """
-        components = snake_str.split('_')
-        return ''.join(word.capitalize() for word in components)
+        return naming_converter.to_pascal_case(snake_str)
     
     @staticmethod
     def _to_snake_case(camel_str: str) -> str:
@@ -554,8 +461,4 @@ class ProtoGenerator:
         Returns:
             蛇形命名字符串
         """
-        # 处理连续大写字母：XMLParser -> XML_Parser
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', camel_str)
-        # 处理小写字母后跟大写字母：userId -> user_Id
-        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-        return s2.lower() 
+        return naming_converter.to_snake_case(camel_str) 

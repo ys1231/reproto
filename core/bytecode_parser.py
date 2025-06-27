@@ -1,6 +1,7 @@
 from typing import List, Dict, Tuple
 import re
 from ..models import FieldDefinition, OneofDefinition
+from utils.type_utils import naming_converter
 
 class BytecodeParser:
     """
@@ -231,11 +232,7 @@ class BytecodeParser:
         """
         将 CamelCase 转换为 snake_case。
         """
-        # 处理连续的大写字母
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-        # 处理小写字母后跟大写字母的情况
-        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-        return s2.lower()
+        return naming_converter.to_snake_case(name)
 
     def _clean_field_name(self, name: str) -> str:
         """
