@@ -1,27 +1,23 @@
-from dataclasses import dataclass, field
-from typing import List, Dict, Set
+"""
+模型定义模块
 
-@dataclass
-class FieldDefinition:
-    """表示一个 Protobuf 消息中的字段。"""
-    name: str
-    type: str
-    tag: int
-    rule: str # "optional", "repeated", or "oneof"
+包含Protobuf消息、字段、枚举等数据结构的定义
+所有具体的类定义都在相应的子模块中
+"""
 
-@dataclass
-class OneofDefinition:
-    """表示一个 Protobuf oneof 块。"""
-    name: str
-    fields: List[FieldDefinition] = field(default_factory=list)
+# 从子模块导入主要类，便于外部使用
+from .message_definition import (
+    MessageDefinition, 
+    FieldDefinition, 
+    OneofDefinition, 
+    EnumDefinition, 
+    EnumValueDefinition
+)
 
-@dataclass
-class MessageDefinition:
-    """表示一个完整的 Protobuf 消息的定义。"""
-    name: str
-    package: str
-    info_string: str = ""
-    objects: List[str] = field(default_factory=list)
-    fields: List[FieldDefinition] = field(default_factory=list)
-    oneofs: Dict[str, OneofDefinition] = field(default_factory=dict)
-    dependencies: Set[str] = field(default_factory=set) 
+__all__ = [
+    'MessageDefinition',
+    'FieldDefinition', 
+    'OneofDefinition',
+    'EnumDefinition',
+    'EnumValueDefinition'
+] 

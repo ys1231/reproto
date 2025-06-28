@@ -22,7 +22,9 @@ from generation.proto_generator import ProtoGenerator
 from models.message_definition import MessageDefinition, EnumDefinition, EnumValueDefinition
 from utils.logger import get_logger
 from utils.file_cache import get_file_cache
-from utils.type_utils import type_mapper, naming_converter
+from utils.type_utils import type_mapper, naming_converter, TypeMapper, NamingConverter
+from utils.builtin_proto import get_builtin_manager
+from utils.type_index import get_type_index
 
 
 class JavaSourceAnalyzer:
@@ -359,7 +361,6 @@ class ProtoReconstructor:
         self.info_decoder.java_source_analyzer = self.java_source_analyzer
         
         # 初始化内置proto管理器
-        from utils.builtin_proto import get_builtin_manager
         self.builtin_manager = get_builtin_manager(output_dir=str(output_dir))
         
         # 🚀 性能优化：移除未使用的索引系统，简化代码
@@ -404,7 +405,6 @@ class ProtoReconstructor:
         self._generate_all_proto_files()
         
         # 5. 输出性能统计信息
-        from utils.file_cache import get_file_cache
         file_cache = get_file_cache()
         file_cache.print_stats()
         
@@ -1269,8 +1269,6 @@ class ProtoReconstructor:
             是否为基础字段类型
         """
         # 🚀 性能优化：使用缓存的类型检查器，避免重复计算
-        from utils.type_utils import TypeMapper
-        
         # 直接使用统一的基础类型检查，无需额外逻辑
         return TypeMapper.is_java_basic_type(type_name)
 
@@ -1353,8 +1351,6 @@ class ProtoReconstructor:
             实际的完整类型名
         """
         # 🚀 优化：使用统一的类型检查器
-        from utils.type_utils import TypeMapper
-        
         if TypeMapper.is_java_basic_type(inferred_type):
             self.logger.debug(f"    跳过基础类型: {inferred_type}")
             return None
@@ -1365,7 +1361,6 @@ class ProtoReconstructor:
         
         try:
             # 使用索引系统进行快速查找，避免文件IO
-            from utils.type_index import get_type_index
             type_index = get_type_index(self.sources_dir)
             
             # 构造可能的完整类名
@@ -1523,5 +1518,4 @@ class ProtoReconstructor:
             蛇形命名字符串
         """
         # 🚀 优化：使用统一的命名转换器，避免重复实现
-        from utils.type_utils import NamingConverter
         return NamingConverter.to_snake_case(camel_str) 
