@@ -27,12 +27,13 @@ class JavaParser:
         self.logger = get_logger("java_parser")
         
         # 匹配newMessageInfo调用的正则表达式
-        # 格式：GeneratedMessageLite.newMessageInfo(DEFAULT_INSTANCE, "字节码", new Object[]{对象数组})
+        # 格式1：GeneratedMessageLite.newMessageInfo(DEFAULT_INSTANCE, "字节码", new Object[]{对象数组})
+        # 格式2：GeneratedMessageLite.newMessageInfo(DEFAULT_INSTANCE, "字节码", null)
         self.new_message_info_pattern = re.compile(
             r'GeneratedMessageLite\.newMessageInfo\(\s*'
             r'DEFAULT_INSTANCE\s*,\s*'
             r'"([^"]*)",\s*'  # 捕获字节码字符串
-            r'new\s+Object\[\]\s*\{([^}]*)\}',  # 捕获对象数组
+            r'(?:new\s+Object\[\]\s*\{([^}]*)\}|null)',  # 捕获对象数组或null
             re.DOTALL
         )
     
@@ -50,23 +51,168 @@ class JavaParser:
             # 读取Java文件内容
             content = java_file_path.read_text(encoding='utf-8')
             
-            # 查找newMessageInfo调用
-            match = self.new_message_info_pattern.search(content)
-            if not match:
+            # 查找所有newMessageInfo调用
+            matches = self.new_message_info_pattern.findall(content)
+            if not matches:
                 return None, None
             
-            # 提取字节码字符串和对象数组字符串
-            info_string = match.group(1)
-            objects_str = match.group(2)
+            # 获取主类的字段标签
+            main_class_field_tags = self._extract_field_number_constants(content)
             
-            # 解析对象数组
-            objects_array = self._parse_objects_array(objects_str)
+            # 根据字段匹配选择正确的newMessageInfo调用
+            best_match = self._select_main_class_message_info(matches, main_class_field_tags)
+            if not best_match:
+                return None, None
+            
+            info_string, objects_str = best_match
+            
+            # 解析对象数组（允许null/空对象数组）
+            if objects_str and objects_str.strip():
+                objects_array = self._parse_objects_array(objects_str)
+            else:
+                objects_array = []  # 空消息的情况（null或空字符串）
             
             return info_string, objects_array
             
         except Exception as e:
             self.logger.error(f"❌ 解析Java文件失败 {java_file_path}: {e}")
             return None, None
+    
+    def parse_inner_class_from_file(self, java_file_path: Path, inner_class_name: str) -> Tuple[Optional[str], Optional[List[str]]]:
+        """
+        从外部类文件中解析指定的内部类的protobuf信息
+        
+        Args:
+            java_file_path: 外部类Java文件路径
+            inner_class_name: 内部类名（如"SkipRecovery"）
+            
+        Returns:
+            Tuple[字节码字符串, 对象数组] 或 (None, None) 如果解析失败
+        """
+        try:
+            # 读取Java文件内容
+            content = java_file_path.read_text(encoding='utf-8')
+            
+            # 提取指定内部类的内容
+            inner_class_content = self._extract_inner_class_content(content, inner_class_name)
+            if not inner_class_content:
+                self.logger.error(f"❌ 在文件 {java_file_path} 中找不到内部类: {inner_class_name}")
+                return None, None
+            
+            # 在内部类内容中查找newMessageInfo调用
+            matches = self.new_message_info_pattern.findall(inner_class_content)
+            if not matches:
+                self.logger.debug(f"  🔍 内部类 {inner_class_name} 中没有找到newMessageInfo调用")
+                return None, None
+            
+            # 对于内部类，通常只有一个newMessageInfo调用
+            info_string, objects_str = matches[0]
+            
+            # 解析对象数组（允许null/空对象数组）
+            if objects_str and objects_str.strip():
+                objects_array = self._parse_objects_array(objects_str)
+            else:
+                objects_array = []  # 空消息的情况（null或空字符串）
+            
+            # 为内部类单独提取字段标签
+            self._extract_inner_class_field_tags(java_file_path, inner_class_name, inner_class_content)
+            
+            self.logger.info(f"  ✅ 成功解析内部类 {inner_class_name}: {len(objects_array)} 个对象")
+            return info_string, objects_array
+            
+        except Exception as e:
+            self.logger.error(f"❌ 解析内部类失败 {inner_class_name} from {java_file_path}: {e}")
+            return None, None
+    
+    def _extract_inner_class_content(self, content: str, inner_class_name: str) -> Optional[str]:
+        """
+        从Java文件内容中提取指定内部类的内容
+        
+        Args:
+            content: Java文件内容
+            inner_class_name: 内部类名
+            
+        Returns:
+            内部类的内容，如果找不到则返回None
+        """
+        # 查找内部类定义的开始
+        # 匹配模式：public static final class InnerClassName extends ...
+        class_pattern = rf'public\s+static\s+final\s+class\s+{re.escape(inner_class_name)}\s+extends\s+'
+        match = re.search(class_pattern, content)
+        
+        if not match:
+            # 尝试更宽松的匹配
+            class_pattern = rf'class\s+{re.escape(inner_class_name)}\s+extends\s+'
+            match = re.search(class_pattern, content)
+            
+        if not match:
+            return None
+        
+        # 找到类定义的开始位置
+        class_start = match.start()
+        
+        # 从类定义开始位置往前找到第一个'{'
+        content_from_class = content[class_start:]
+        brace_start = content_from_class.find('{')
+        if brace_start == -1:
+            return None
+        
+        # 从第一个'{'开始，找到匹配的'}'
+        start_pos = class_start + brace_start + 1
+        brace_count = 1
+        pos = start_pos
+        
+        while pos < len(content) and brace_count > 0:
+            if content[pos] == '{':
+                brace_count += 1
+            elif content[pos] == '}':
+                brace_count -= 1
+            pos += 1
+        
+        if brace_count == 0:
+            # 找到了匹配的结束位置
+            inner_class_content = content[start_pos:pos-1]
+            return inner_class_content
+        
+        return None
+    
+    def _extract_inner_class_field_tags(self, java_file_path: Path, inner_class_name: str, inner_class_content: str) -> None:
+        """
+        为内部类提取字段标签，并缓存到文件系统中
+        
+        Args:
+            java_file_path: Java文件路径
+            inner_class_name: 内部类名
+            inner_class_content: 内部类的源码内容
+        """
+        # 从内部类内容中提取字段标签
+        field_tags = self._extract_field_tags_from_source(inner_class_content)
+        
+        if field_tags:
+            # 创建内部类的虚拟文件路径，用于缓存字段标签
+            # 如：Service$CompleteOnboardingRequest.java -> Service$CompleteOnboardingRequest$InstallationInfo.java
+            virtual_file_path = java_file_path.parent / f"{java_file_path.stem}${inner_class_name}.java"
+            
+            # 将字段标签缓存到虚拟文件路径
+            self._cache_field_tags(virtual_file_path, field_tags)
+            
+            self.logger.debug(f"  🏷️ 为内部类 {inner_class_name} 提取了 {len(field_tags)} 个字段标签")
+        else:
+            self.logger.debug(f"  🔍 内部类 {inner_class_name} 没有字段标签")
+    
+    def _cache_field_tags(self, file_path: Path, field_tags: dict) -> None:
+        """
+        缓存字段标签到内存中，供后续使用
+        
+        Args:
+            file_path: 文件路径（可能是虚拟路径）
+            field_tags: 字段标签字典
+        """
+        # 使用简单的内存缓存
+        if not hasattr(self, '_field_tags_cache'):
+            self._field_tags_cache = {}
+        
+        self._field_tags_cache[str(file_path)] = field_tags
     
     def _parse_objects_array(self, objects_str: str) -> List[str]:
         """
@@ -182,6 +328,85 @@ class JavaParser:
             part = part[:-6]
         
         return part if part else None
+    
+    def _select_main_class_message_info(self, matches: List[tuple], main_class_field_tags: dict) -> Optional[tuple]:
+        """
+        根据字段匹配选择主类的newMessageInfo调用
+        
+        Args:
+            matches: 所有newMessageInfo匹配结果 [(info_string, objects_str), ...]
+            main_class_field_tags: 主类字段标签 {const_name: tag_value}
+            
+        Returns:
+            主类的newMessageInfo匹配结果或None
+        """
+        if not matches:
+            return None
+        
+        if len(matches) == 1:
+            return matches[0]
+        
+        # 从主类字段标签生成期望的字段名列表
+        expected_fields = set()
+        for const_name in main_class_field_tags.keys():
+            field_name = self._const_name_to_field_name(const_name)
+            expected_fields.add(field_name)
+        
+        self.logger.debug(f"  🔍 主类期望字段: {expected_fields}")
+        
+        best_match = None
+        best_score = 0
+        
+        for info_string, objects_str in matches:
+            # 解析对象数组（允许null/空对象数组）
+            if objects_str and objects_str.strip():
+                objects_array = self._parse_objects_array(objects_str)
+            else:
+                objects_array = []  # 空消息的情况（null或空字符串）
+            
+            # 计算匹配分数
+            score = self._calculate_field_match_score(objects_array, expected_fields)
+            
+            self.logger.debug(f"  📊 对象数组 {objects_array[:3]}... 匹配分数: {score}")
+            
+            if score > best_score:
+                best_score = score
+                best_match = (info_string, objects_str)
+        
+        if best_match:
+            self.logger.info(f"  ✅ 选择主类newMessageInfo，匹配分数: {best_score}")
+        else:
+            self.logger.warning(f"  ⚠️  无法找到匹配的主类newMessageInfo")
+        
+        return best_match
+    
+    def _calculate_field_match_score(self, objects_array: List[str], expected_fields: set) -> int:
+        """
+        计算对象数组与期望字段的匹配分数
+        
+        Args:
+            objects_array: 解析后的对象数组
+            expected_fields: 期望的字段名集合
+            
+        Returns:
+            匹配分数（匹配的字段数量）
+        """
+        if not objects_array or not expected_fields:
+            return 0
+        
+        match_count = 0
+        
+        for obj in objects_array:
+            # 检查是否是字段名（以_结尾的字符串）
+            if obj.endswith('_'):
+                if obj in expected_fields:
+                    match_count += 1
+            # 检查是否是类引用（不以_结尾，可能是oneof字段的类型）
+            elif not obj.endswith('_'):
+                # 类引用也算作有效匹配，但权重较低
+                match_count += 0.5
+        
+        return int(match_count)
     
     def parse_enum_file(self, java_file_path: Path) -> Optional[List[tuple]]:
         """
@@ -369,6 +594,18 @@ class JavaParser:
             字段标签映射 {field_name: tag} 或 None 如果解析失败
         """
         try:
+            # 首先检查是否有缓存的字段标签（用于内部类）
+            if hasattr(self, '_field_tags_cache'):
+                cache_key = str(java_file_path)
+                if cache_key in self._field_tags_cache:
+                    self.logger.debug(f"  🎯 使用缓存的字段标签: {java_file_path}")
+                    return self._field_tags_cache[cache_key]
+            
+            # 检查文件是否存在（虚拟文件路径不存在）
+            if not java_file_path.exists():
+                self.logger.debug(f"  📁 文件不存在，跳过字段标签提取: {java_file_path}")
+                return None
+            
             # 读取Java文件内容
             content = java_file_path.read_text(encoding='utf-8')
             
@@ -451,7 +688,7 @@ class JavaParser:
     
     def _extract_field_number_constants(self, content: str) -> dict:
         """
-        提取所有FIELD_NUMBER常量
+        提取主类的FIELD_NUMBER常量（排除内部类）
         
         Args:
             content: Java文件内容
@@ -459,18 +696,64 @@ class JavaParser:
         Returns:
             常量名到值的映射 {const_name: value}
         """
+        # 首先找到主类的定义范围
+        main_class_content = self._extract_main_class_content(content)
+        
         field_tag_pattern = re.compile(
             r'\s*public\s+static\s+final\s+int\s+'  # 允许行首有空白字符
             r'([A-Z0-9_]+)_FIELD_NUMBER\s*=\s*(\d+)\s*;'  # 允许常量名包含数字
         )
         
         constants = {}
-        for match in field_tag_pattern.finditer(content):
+        for match in field_tag_pattern.finditer(main_class_content):
             const_name = match.group(1)
             tag_value = int(match.group(2))
             constants[const_name] = tag_value
         
         return constants
+    
+    def _extract_main_class_content(self, content: str) -> str:
+        """
+        提取主类的内容，排除内部类定义
+        
+        Args:
+            content: Java文件内容
+            
+        Returns:
+            主类内容（不包括内部类）
+        """
+        # 找到主类的开始位置
+        main_class_pattern = re.compile(
+            r'public\s+final\s+class\s+\w+(?:\$\w+)?\s+extends\s+GeneratedMessageLite.*?\{',
+            re.DOTALL
+        )
+        
+        main_class_match = main_class_pattern.search(content)
+        if not main_class_match:
+            # 如果找不到主类定义，返回整个内容作为回退
+            return content
+        
+        main_class_start = main_class_match.end()
+        
+        # 找到第一个内部类的开始位置
+        inner_class_pattern = re.compile(
+            r'\n\s*public\s+(?:static\s+)?(?:final\s+)?class\s+\w+\s+extends\s+',
+            re.MULTILINE
+        )
+        
+        # 从主类开始位置搜索内部类
+        content_from_main_class = content[main_class_start:]
+        inner_class_match = inner_class_pattern.search(content_from_main_class)
+        
+        if inner_class_match:
+            # 如果找到内部类，只返回主类部分
+            inner_class_start = main_class_start + inner_class_match.start()
+            main_class_content = content[:inner_class_start]
+        else:
+            # 如果没有内部类，返回整个内容
+            main_class_content = content
+        
+        return main_class_content
     
     def _generate_possible_constant_names(self, field_name: str) -> List[str]:
         """

@@ -190,7 +190,16 @@ class ProtoGenerator:
         Returns:
             消息定义的行列表
         """
-        lines = [f'message {message_def.name} {{']
+        # 清理消息名称中的$符号
+        clean_name = naming_converter.clean_proto_name(message_def.name)
+        
+        lines = []
+        
+        # 如果是内部类、匿名类或包含$的特殊类，添加原始Java类名注释
+        if message_def.full_name and ('$' in message_def.full_name or 'Anonymous' in message_def.full_name):
+            lines.append(f'// 原始Java类: {message_def.full_name}')
+        
+        lines.append(f'message {clean_name} {{')
         
         # 生成oneof字段（oneof字段内部也按tag排序）
         for oneof in message_def.oneofs:
@@ -214,7 +223,16 @@ class ProtoGenerator:
         Returns:
             枚举定义的行列表
         """
-        lines = [f'enum {enum_def.name} {{']
+        # 清理枚举名称中的$符号
+        clean_name = naming_converter.clean_proto_name(enum_def.name)
+        
+        lines = []
+        
+        # 如果是内部类、匿名类或包含$的特殊enum，添加原始Java类名注释
+        if enum_def.full_name and ('$' in enum_def.full_name or 'Anonymous' in enum_def.full_name):
+            lines.append(f'// 原始Java类: {enum_def.full_name}')
+        
+        lines.append(f'enum {clean_name} {{')
         
         # 生成枚举值（按value排序）
         sorted_values = sorted(enum_def.values, key=lambda enum_value: enum_value.value)
@@ -335,6 +353,16 @@ class ProtoGenerator:
         if field.type_name in basic_proto_types:
             return None
         
+        # 检查是否为Google Protobuf内置类型
+        try:
+            from utils.builtin_proto import get_builtin_manager
+            builtin_manager = get_builtin_manager()
+            if builtin_manager.is_builtin_type(field.type_name):
+                return builtin_manager.get_import_path(field.type_name)
+        except (ImportError, ValueError):
+            # 如果内置管理器不可用，继续使用原有逻辑
+            pass
+        
         # 处理map类型：map<string, Contact> -> 提取值类型Contact
         if field.type_name.startswith('map<'):
             # 解析map类型：map<key_type, value_type>
@@ -365,6 +393,10 @@ class ProtoGenerator:
                 if field.type_name == enum_class_name or field.type_name == enum_def.name:
                     # 生成枚举文件的导入路径
                     return self._class_name_to_import_path(enum_full_name)
+        
+        # 优先使用字段定义中保存的完整类名信息（用于内部类等特殊情况）
+        if hasattr(field, 'full_class_name') and field.full_class_name:
+            return self._class_name_to_import_path(field.full_class_name)
         
         # 解析完整类名（消息类型）
         full_class_name = self._resolve_full_class_name(field.type_name, current_package, all_messages)
@@ -418,9 +450,12 @@ class ProtoGenerator:
         Returns:
             proto导入路径
         """
-        # com.example.Model -> com/example/model.proto
+        # com.example.Service$SkipRecovery -> com/example/service_skip_recovery.proto
+        # 注意：这里要使用完整的类名（包含$符号）来生成文件名，与实际文件名保持一致
         parts = class_name.split('.')
-        proto_name = self._to_snake_case(parts[-1]) + '.proto'
+        # 使用完整的类名部分（可能包含$）来生成proto文件名
+        class_part = parts[-1]
+        proto_name = self._to_snake_case(class_part) + '.proto'
         package_path = '/'.join(parts[:-1])
         return f"{package_path}/{proto_name}"
     
@@ -464,20 +499,25 @@ class ProtoGenerator:
         if field.type_name == 'message':
             return self._generate_message_type_name(field.name)
         
-        # 检查是否为枚举类型，如果是则使用原始枚举名
+        # 检查是否为枚举类型，如果是则使用清理后的枚举名
         if all_enums:
             for enum_full_name, enum_def in all_enums.items():
                 enum_class_name = enum_full_name.split('.')[-1]  # 获取类名部分
                 if field.type_name == enum_class_name:
-                    # 使用原始枚举名而不是混淆名
-                    return enum_def.name
+                    # 使用清理后的枚举名，去掉$符号
+                    return naming_converter.clean_proto_name(enum_def.name)
         
-        # 已知的具体类型名，提取简单类型名
+        # 已知的具体类型名，处理Google Protobuf类型和普通类型
         if '.' in field.type_name:
-            # 从完整类名中提取简单类型名
-            return field.type_name.split('.')[-1]
+            # 如果是Google Protobuf类型，保持完整的类型名
+            if field.type_name.startswith('google.protobuf.'):
+                return field.type_name
+            # 其他类型提取简单类型名，并清理$符号
+            simple_name = field.type_name.split('.')[-1]
+            return naming_converter.clean_proto_name(simple_name)
         else:
-            return field.type_name
+            # 清理简单类型名中的$符号
+            return naming_converter.clean_proto_name(field.type_name)
     
     def _get_basic_proto_type(self, type_name: str) -> str:
         """

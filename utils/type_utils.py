@@ -169,9 +169,17 @@ class TypeMapper:
         """获取类型所需的导入语句"""
         imports = []
         if cls.is_well_known_type(proto_type):
-            # 提取具体的well-known type名称
-            type_name = proto_type.split('.')[-1].lower()
-            imports.append(f"google/protobuf/{type_name}.proto")
+            # 使用内置proto管理器获取正确的导入路径
+            try:
+                from utils.builtin_proto import get_builtin_manager
+                builtin_manager = get_builtin_manager()
+                import_path = builtin_manager.get_import_path(proto_type)
+                if import_path:
+                    imports.append(import_path)
+            except (ImportError, ValueError):
+                # 如果内置管理器不可用，使用旧逻辑作为后备
+                type_name = proto_type.split('.')[-1].lower()
+                imports.append(f"google/protobuf/{type_name}.proto")
         return imports
     
     @classmethod
@@ -227,7 +235,7 @@ class NamingConverter:
     @staticmethod
     def to_snake_case(camel_str: str) -> str:
         """
-        将CamelCase转换为snake_case
+        将CamelCase转换为snake_case，同时处理$符号
         
         Args:
             camel_str: 驼峰命名字符串
@@ -238,11 +246,18 @@ class NamingConverter:
         if not camel_str:
             return camel_str
             
+        # 首先处理$符号：将$替换为_，处理内部类和匿名类
+        s0 = camel_str.replace('$', '_')
+        
         # 处理连续大写字母：XMLParser -> XML_Parser
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', camel_str)
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', s0)
         # 处理小写字母后跟大写字母：userId -> user_Id
         s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
-        return s2.lower()
+        
+        # 清理多余的下划线：将连续的下划线替换为单个下划线
+        s3 = re.sub('_+', '_', s2)
+        
+        return s3.lower()
     
     @staticmethod
     def to_pascal_case(snake_str: str) -> str:
@@ -281,6 +296,24 @@ class NamingConverter:
             
         # 第一个单词保持小写，其余单词首字母大写
         return components[0].lower() + ''.join(word.capitalize() for word in components[1:] if word)
+    
+    @staticmethod
+    def clean_proto_name(name: str) -> str:
+        """
+        清理proto名称中的$符号，用于消息和枚举名称
+        
+        Args:
+            name: 原始名称（可能包含$符号）
+            
+        Returns:
+            清理后的名称
+        """
+        if not name:
+            return name
+            
+        # 将$替换为空字符串，这样Models$Device变成ModelsDevice
+        # 这符合proto命名规范，避免语法错误
+        return name.replace('$', '')
 
 
 class FieldNameProcessor:

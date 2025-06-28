@@ -267,6 +267,43 @@ class JavaSourceAnalyzer:
         
         return None
     
+    def _extract_constant_value(self, constant_name: str) -> Optional[int]:
+        """
+        从Java源码中提取常量值
+        
+        Args:
+            constant_name: 常量名（如 "SKIP_RECOVERY_FIELD_NUMBER"）
+            
+        Returns:
+            常量值，如果找不到则返回None
+        """
+        if not self._current_class_content:
+            return None
+        
+        # 查找常量声明模式
+        patterns = [
+            # public static final int SKIP_RECOVERY_FIELD_NUMBER = 5;
+            rf'public\s+static\s+final\s+int\s+{re.escape(constant_name)}\s*=\s*(\d+)\s*;',
+            # private static final int SKIP_RECOVERY_FIELD_NUMBER = 5;
+            rf'private\s+static\s+final\s+int\s+{re.escape(constant_name)}\s*=\s*(\d+)\s*;',
+            # static final int SKIP_RECOVERY_FIELD_NUMBER = 5;
+            rf'static\s+final\s+int\s+{re.escape(constant_name)}\s*=\s*(\d+)\s*;',
+            # final int SKIP_RECOVERY_FIELD_NUMBER = 5;
+            rf'final\s+int\s+{re.escape(constant_name)}\s*=\s*(\d+)\s*;',
+            # int SKIP_RECOVERY_FIELD_NUMBER = 5;
+            rf'int\s+{re.escape(constant_name)}\s*=\s*(\d+)\s*;',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, self._current_class_content)
+            if matches:
+                try:
+                    return int(matches[0])
+                except ValueError:
+                    continue
+        
+        return None
+    
     def _load_class_content(self, class_name: str) -> Optional[str]:
         """加载类的源码内容（使用缓存优化）"""
         try:
@@ -320,6 +357,10 @@ class ProtoReconstructor:
         # 初始化Java源码分析器
         self.java_source_analyzer = JavaSourceAnalyzer(sources_dir)
         self.info_decoder.java_source_analyzer = self.java_source_analyzer
+        
+        # 初始化内置proto管理器
+        from utils.builtin_proto import get_builtin_manager
+        self.builtin_manager = get_builtin_manager(output_dir=str(output_dir))
         
         # 🚀 性能优化：移除未使用的索引系统，简化代码
         # 索引系统在实际使用中被基础类型检测绕过，且构建耗时
@@ -460,7 +501,20 @@ class ProtoReconstructor:
                 return
             
             # 3. 尝试解析为消息类
-            info_string, objects_array = self.java_parser.parse_java_file(java_file_path)
+            # 特殊处理：如果是内部类且找到的是外部类文件，需要从外部类中提取内部类信息
+            if '$' in class_name and java_file_path.stem != class_name.split('.')[-1]:
+                # 这是内部类，但找到的是外部类文件
+                inner_class_name = class_name.split('$')[-1]  # 获取内部类名
+                info_string, objects_array = self.java_parser.parse_inner_class_from_file(
+                    java_file_path, inner_class_name
+                )
+                # 为内部类创建虚拟的Java文件路径，用于字段标签提取
+                virtual_java_file_path = java_file_path.parent / f"{java_file_path.stem}${inner_class_name}.java"
+            else:
+                # 普通类或独立的内部类文件
+                info_string, objects_array = self.java_parser.parse_java_file(java_file_path)
+                virtual_java_file_path = java_file_path
+            
             if not info_string:
                 error_msg = "无法从Java文件中提取protobuf信息"
                 self.failed_classes[class_name] = error_msg
@@ -469,7 +523,7 @@ class ProtoReconstructor:
             
             # 4. 解码字节码为消息定义
             message_def = self.info_decoder.decode_message_info(
-                class_name, info_string, objects_array, java_file_path
+                class_name, info_string, objects_array, virtual_java_file_path
             )
             
             if message_def:
@@ -478,6 +532,16 @@ class ProtoReconstructor:
                 
                 # 5. 发现并添加依赖类到队列
                 self._discover_dependencies(message_def)
+                
+                # 6. 处理InfoDecoder发现的依赖类（如oneof中的类引用）
+                discovered_deps = self.info_decoder.get_discovered_dependencies()
+                for dep_class in discovered_deps:
+                    if dep_class not in self.processed_classes and dep_class not in self.pending_classes:
+                        self.pending_classes.append(dep_class)
+                        self.logger.info(f"  🔗 发现oneof依赖: {dep_class}")
+                
+                # 清理InfoDecoder的依赖记录，为下次解析做准备
+                self.info_decoder.discovered_dependencies = []
             else:
                 error_msg = "字节码解码失败，可能不是protobuf消息类"
                 self.failed_classes[class_name] = error_msg
@@ -503,10 +567,23 @@ class ProtoReconstructor:
             message_def: 消息定义对象
         """
         dependencies = self._extract_dependencies(message_def)
+        builtin_count = 0
+        
         for dep in dependencies:
-            if dep not in self.processed_classes:
+            # 检查是否为内置类型
+            if self.builtin_manager.is_builtin_type(dep):
+                # 处理内置类型依赖
+                if self.builtin_manager.ensure_builtin_proto_file(dep):
+                    self.logger.info(f"  📦 处理内置依赖: {dep}")
+                    builtin_count += 1
+                else:
+                    self.logger.error(f"  ❌ 内置依赖处理失败: {dep}")
+            elif dep not in self.processed_classes:
                 self.pending_classes.append(dep)
                 self.logger.info(f"  🔗 发现依赖: {dep}")
+                
+        if builtin_count > 0:
+            self.logger.info(f"  📊 处理了 {builtin_count} 个内置依赖")
                 
         # 处理枚举依赖
         self.logger.info(f"  🔍 开始处理枚举依赖...")
@@ -930,20 +1007,46 @@ class ProtoReconstructor:
         if full_path.exists():
             return full_path
         
-        # 🚀 优化2：处理内部类，但避免全目录扫描
+        # 🚀 优化2：处理内部类，正确的查找顺序
         if '$' in class_name:
-            # 内部类处理：com.example.Models$Inner -> com/example/Models.java
             last_dot_index = class_name.rfind('.')
             if last_dot_index != -1:
                 package_path = class_name[:last_dot_index].replace('.', '/')
                 class_part = class_name[last_dot_index + 1:]
                 
-                # 提取外部类名（$之前的部分）
+                # 方式1：优先查找主类文件 - 内部类通常定义在主类中
+                # 如：com.example.Service$InnerClass -> 在 Service$CompleteOnboardingRequest.java 中查找
+                # 这里需要找到包含这个内部类的主类文件
+                outer_class_prefix = class_part.split('$')[0]  # Service
+                
+                # 在同一包下查找所有以外部类名开头的文件，并检查是否包含目标内部类
+                inner_class_name = class_part.split('$')[-1]  # 获取内部类名，如SkipRecovery
+                package_dir = self.sources_dir / package_path
+                if package_dir.exists():
+                    for java_file in package_dir.glob(f"{outer_class_prefix}$*.java"):
+                        self.logger.debug(f"    📁 检查主类文件: {java_file}")
+                        # 检查这个文件是否包含目标内部类
+                        if self._file_contains_inner_class(java_file, inner_class_name):
+                            self.logger.debug(f"    ✅ 找到包含内部类 {inner_class_name} 的文件: {java_file}")
+                            return java_file
+                
+                # 方式2：查找独立的内部类文件
+                # 如：com.example.Service$InnerClass -> com/example/Service$InnerClass.java
+                inner_class_file_path = f"{package_path}/{class_part}.java"
+                inner_class_full_path = self.sources_dir / inner_class_file_path
+                
+                if inner_class_full_path.exists():
+                    self.logger.debug(f"    📁 找到独立内部类文件: {inner_class_full_path}")
+                    return inner_class_full_path
+                
+                # 方式3：传统风格 - 内部类在外部类文件中（外部类本身）
+                # 如：com.example.Service$InnerClass -> com/example/Service.java
                 outer_class = class_part.split('$')[0]
                 outer_class_file_path = f"{package_path}/{outer_class}.java"
                 outer_class_full_path = self.sources_dir / outer_class_file_path
                 
                 if outer_class_full_path.exists():
+                    self.logger.debug(f"    📁 找到外部类文件: {outer_class_full_path}")
                     return outer_class_full_path
         
         # 🚀 优化3：简化文件查找逻辑，移除索引依赖
@@ -969,6 +1072,32 @@ class ProtoReconstructor:
                         return java_file
         
         return None
+    
+    def _file_contains_inner_class(self, java_file_path: Path, inner_class_name: str) -> bool:
+        """
+        检查Java文件是否包含指定的内部类定义
+        
+        Args:
+            java_file_path: Java文件路径
+            inner_class_name: 内部类名（如"SkipRecovery"）
+            
+        Returns:
+            是否包含该内部类
+        """
+        try:
+            content = java_file_path.read_text(encoding='utf-8')
+            # 查找内部类定义
+            class_pattern = rf'public\s+static\s+final\s+class\s+{re.escape(inner_class_name)}\s+extends\s+'
+            if re.search(class_pattern, content):
+                return True
+            
+            # 尝试更宽松的匹配
+            class_pattern = rf'class\s+{re.escape(inner_class_name)}\s+extends\s+'
+            return re.search(class_pattern, content) is not None
+            
+        except Exception as e:
+            self.logger.debug(f"    ❌ 检查文件 {java_file_path} 时出错: {e}")
+            return False
     
     def _infer_full_class_name(self, simple_name: str, current_package: str) -> Optional[str]:
         """

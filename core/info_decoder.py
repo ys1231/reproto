@@ -93,12 +93,19 @@ class InfoDecoder:
             # 创建消息定义
             message_def = self._create_message_definition(class_name)
             
+            # 存储当前处理的类名，供依赖推断使用
+            self._current_processing_class = class_name
+            
             # 提取字段标签（如果有Java文件路径）
             field_tags = None
             if java_file_path:
+                # 存储当前Java文件路径，供其他方法使用
+                self._current_java_file_path = java_file_path
                 field_tags = self.java_parser.extract_field_tags(java_file_path)
                 if field_tags:
                     self.logger.info(f"    🏷️ 从Java源码提取到 {len(field_tags)} 个字段标签")
+            else:
+                self._current_java_file_path = None
             
             # 解析字段信息
             self._parse_fields(message_def, bytes_data, objects, field_tags)
@@ -177,9 +184,14 @@ class InfoDecoder:
             # 检查是否包含oneof字段（通过查找'<'字符，ord=60）
             oneof_positions = [i for i, byte_val in enumerate(bytes_data) if byte_val == 60]
             
+            self.logger.info(f"    🔍 字节码长度: {len(bytes_data)}, oneof_positions: {oneof_positions}")
+            self.logger.info(f"    🔍 字节码内容: {[f'{b:02x}' for b in bytes_data[:20]]}...")
+            
             if oneof_positions:
+                self.logger.info(f"    🎯 检测到oneof结构，调用_parse_oneof_fields")
                 self._parse_oneof_fields(message_def, bytes_data, objects, oneof_positions)
             else:
+                self.logger.info(f"    🎯 未检测到oneof结构，调用_parse_regular_fields")
                 self._parse_regular_fields(message_def, bytes_data, objects, field_tags)
                 
         except Exception as e:
@@ -204,19 +216,20 @@ class InfoDecoder:
         self.logger.info(f"    📊 Objects数组: {objects}")
         
         # 如果有字段标签，优先使用Java源码信息
+        self.logger.info(f"    🔍 field_tags类型: {type(field_tags)}, 值: {field_tags}, 布尔值: {bool(field_tags)}")
         if field_tags:
             self.logger.info(f"    🏷️ 使用Java源码字段标签: {field_tags}")
             self._parse_fields_with_java_tags(message_def, bytes_data, objects, field_tags)
         else:
             # 回退到字节码解析
-            self.logger.info(f"    🔍 回退到字节码解析")
+            self.logger.info(f"    🔍 回退到字节码解析，field_tags为: {field_tags}")
             self._parse_fields_from_bytecode(message_def, bytes_data, objects, field_start)
         
         self.logger.info(f"    📊 字段解析完成，共解析 {len(message_def.fields)} 个字段")
     
     def _parse_fields_with_java_tags(self, message_def: MessageDefinition, bytes_data: List[int], objects: List[str], field_tags: dict) -> None:
         """
-        使用Java源码提取的字段标签解析字段
+        使用Java源码提取的字段标签解析字段，同时处理objects数组中的类引用
         
         Args:
             message_def: 消息定义对象
@@ -224,7 +237,48 @@ class InfoDecoder:
             objects: 对象数组
             field_tags: Java源码提取的字段标签映射
         """
+        self.logger.info(f"    🔍 开始_parse_fields_with_java_tags")
+        self.logger.info(f"    📊 Objects数组: {objects}")
+        self.logger.info(f"    📊 字段标签: {field_tags}")
+        
+        # 首先检查是否有oneof结构
+        oneof_field = None
+        class_refs = []
+        
+        for obj in objects:
+            if not obj.endswith('_') and obj not in ['action', 'actionCase', 'result', 'resultCase'] and len(obj) > 2:
+                class_refs.append(obj)
+            elif obj.endswith('_') and obj.rstrip('_') + 'Case_' in objects:
+                oneof_field = obj
+        
+        # 分离普通字段和oneof相关的对象
+        oneof_related_objects = set()
+        if oneof_field and class_refs:
+            # 标记oneof相关的对象
+            oneof_related_objects.add(oneof_field)  # action_
+            oneof_related_objects.add(oneof_field.rstrip('_') + 'Case_')  # actionCase_
+            oneof_related_objects.update(class_refs)  # SkipRecovery, InstallationInfo
+            self.logger.info(f"    🎯 检测到oneof结构: {oneof_field}，包含类引用: {class_refs}")
+            
+            # 特殊处理：如果oneof字段的名称与field_tags中的某些字段名相似，
+            # 说明这些field_tags可能是错误的（来自Java常量的错误转换）
+            # 例如：result_ oneof 但 field_tags 中有 singlesearchresult_, bulksearChresult_
+            oneof_base_name = oneof_field.rstrip('_').lower()
+            for field_name in list(field_tags.keys()):
+                field_base_name = field_name.rstrip('_').lower()
+                # 如果字段名包含oneof的基础名称，或者包含类引用的名称，很可能是错误的字段标签
+                if (oneof_base_name in field_base_name or 
+                    any(class_ref.lower() in field_base_name for class_ref in class_refs)):
+                    oneof_related_objects.add(field_name)
+                    self.logger.debug(f"    🔍 标记疑似错误字段标签: {field_name} (与oneof {oneof_field} 或类引用相关)")
+        
+        # 处理普通字段（从field_tags中提取，排除oneof相关的字段）
         for field_name_raw, field_tag in field_tags.items():
+            # 跳过oneof相关的字段
+            if field_name_raw in oneof_related_objects:
+                self.logger.debug(f"    ⏭️  跳过oneof相关字段: {field_name_raw}")
+                continue
+                
             # 清理字段名
             field_name = self._clean_field_name(field_name_raw)
             
@@ -297,9 +351,6 @@ class InfoDecoder:
             # 特殊情况处理：根据字段名修正类型
             field_type_name = self._refine_field_type(field_name, field_type_name, 0)  # 使用0作为占位符
             
-            # 确定字段规则（基于Java类型判断是否为repeated）
-            # 已经在上面确定了rule，这里不需要重复处理
-            
             # 创建字段定义
             field_def = FieldDefinition(
                 name=field_name,
@@ -310,6 +361,418 @@ class InfoDecoder:
             
             message_def.fields.append(field_def)
             self.logger.info(f"    ✅ 添加字段: {field_name} = {field_tag} ({rule} {field_type_name})")
+        
+        # 最后处理objects数组中的类引用，检测oneof结构
+        self._parse_oneof_from_objects(message_def, objects, field_tags)
+    
+    def _parse_oneof_from_objects(self, message_def: MessageDefinition, objects: List[str], field_tags: dict) -> None:
+        """
+        从objects数组中解析oneof结构和类引用
+        
+        Args:
+            message_def: 消息定义对象
+            objects: 对象数组
+            field_tags: 已知的字段标签映射
+        """
+        # 查找类引用（以.class结尾的对象）
+        class_refs = []
+        oneof_field = None
+        
+        # 首先识别已经作为字段类型的类引用，避免重复处理
+        # 通过Java源码分析结果来识别已使用的类引用
+        used_class_refs = set()
+        
+        # 从已解析的字段中提取使用的类引用
+        for field in message_def.fields:
+            # 如果字段类型不是基础类型，就是类引用
+            if (field.type_name not in ['string', 'int32', 'int64', 'long', 'int', 'bool', 'double', 'float', 'bytes'] and
+                not field.type_name.startswith('google.protobuf.') and
+                not field.type_name.startswith('repeated ') and
+                not field.type_name.startswith('map<')):
+                
+                # 提取类名（去掉包名部分）
+                class_name = field.type_name.split('.')[-1]
+                used_class_refs.add(class_name)
+                self.logger.debug(f"    📝 从已解析字段 {field.name} 中识别类引用: {class_name}")
+        
+        # 识别连续的类引用（oneof选项）
+        consecutive_class_refs = []
+        for i, obj in enumerate(objects):
+            if not obj.endswith('_') and obj not in ['action', 'actionCase', 'result', 'resultCase'] and len(obj) > 2:
+                consecutive_class_refs.append(i)
+        
+        # 如果有多个连续的类引用，它们很可能是oneof选项
+        is_oneof_group = len(consecutive_class_refs) > 1
+        if is_oneof_group:
+            # 检查是否连续
+            for i in range(len(consecutive_class_refs) - 1):
+                if consecutive_class_refs[i+1] - consecutive_class_refs[i] == 1:
+                    # 连续的类引用，很可能是oneof选项
+                    self.logger.debug(f"    🔍 检测到连续类引用，可能是oneof选项: {[objects[idx] for idx in consecutive_class_refs]}")
+                    break
+        
+        for i, obj in enumerate(objects):
+            # 检查是否是类引用（不以_结尾且不是基础字段名）
+            if not obj.endswith('_') and obj not in ['action', 'actionCase'] and len(obj) > 2:
+                # 跳过已经作为字段类型的类引用
+                if obj in used_class_refs:
+                    self.logger.debug(f"    ⏭️  跳过已用作字段类型的类引用: {obj}")
+                    continue
+                # 这可能是一个独立的类引用（用于oneof）
+                class_refs.append((i, obj))
+                self.logger.info(f"    🔍 发现独立类引用: {obj}")
+            elif obj.endswith('_') and obj.rstrip('_') + 'Case_' in objects:
+                # 发现oneof字段（通过检查是否有对应的Case字段）
+                oneof_field = obj
+                self.logger.info(f"    🔍 发现oneof字段: {obj}")
+        
+        if class_refs and oneof_field:
+            # 这是一个oneof结构
+            self._create_oneof_structure(message_def, oneof_field, class_refs, field_tags)
+        elif class_refs:
+            # 有类引用但没有明确的oneof字段，可能是直接的消息字段
+            self._create_message_fields_from_class_refs(message_def, class_refs, field_tags)
+    
+    def _create_oneof_structure(self, message_def: MessageDefinition, oneof_field: str, class_refs: List[tuple], field_tags: dict) -> None:
+        """
+        创建oneof结构
+        
+        Args:
+            message_def: 消息定义对象
+            oneof_field: oneof字段名（如"action_"）
+            class_refs: 类引用列表[(索引, 类名)]
+            field_tags: 字段标签映射
+        """
+        from models.message_definition import OneofDefinition
+        
+        # 创建oneof定义
+        oneof_name = self._clean_field_name(oneof_field)
+        oneof_def = OneofDefinition(name=oneof_name)
+        
+        # 收集已使用的字段标签
+        used_tags = set()
+        for field in message_def.fields:
+            used_tags.add(field.tag)
+        for oneof in message_def.oneofs:
+            for field in oneof.fields:
+                used_tags.add(field.tag)
+        
+        # 为每个类引用创建oneof字段
+        for _, class_name in class_refs:
+            # 查找对应的字段标签
+            field_tag = self._find_tag_for_class(class_name, field_tags, used_tags)
+            if field_tag is None:
+                self.logger.warning(f"    ⚠️  无法找到类 {class_name} 的字段标签")
+                continue
+            
+            # 生成字段名：SkipRecovery -> skip_recovery
+            field_name = self._class_name_to_field_name(class_name)
+            
+            # 为oneof字段生成正确的类型名
+            # 如果是内部类（包含$），需要使用完整的类名来生成类型名
+            full_class_name = self._infer_full_dependency_class_name(class_name)
+            if '$' in full_class_name:
+                # 对于内部类，使用完整的类名部分（如Service$SkipRecovery）
+                class_part = full_class_name.split('.')[-1]  # Service$SkipRecovery
+                clean_class_name = class_part.replace('$', '')  # ServiceSkipRecovery
+            else:
+                # 对于普通类，直接清理$符号
+                clean_class_name = class_name.replace('$', '')
+            
+            # 创建字段定义
+            field_def = FieldDefinition(
+                name=field_name,
+                type_name=clean_class_name,
+                tag=field_tag,
+                rule='optional'
+            )
+            
+            # 保存完整的类名信息，用于导入路径生成
+            field_def.full_class_name = self._infer_full_dependency_class_name(class_name)
+            
+            oneof_def.fields.append(field_def)
+            self.logger.info(f"    ✅ 添加oneof字段: {field_name} = {field_tag} ({clean_class_name})")
+            
+            # 记录依赖类
+            self._record_dependency_class(class_name)
+        
+        if oneof_def.fields:
+            message_def.oneofs.append(oneof_def)
+            self.logger.info(f"    🎯 创建oneof: {oneof_name} (包含 {len(oneof_def.fields)} 个字段)")
+    
+    def _create_message_fields_from_class_refs(self, message_def: MessageDefinition, class_refs: List[tuple], field_tags: dict) -> None:
+        """
+        从类引用创建普通消息字段
+        
+        Args:
+            message_def: 消息定义对象
+            class_refs: 类引用列表[(索引, 类名)]
+            field_tags: 字段标签映射
+        """
+        # 收集已使用的字段标签
+        used_tags = set()
+        for field in message_def.fields:
+            used_tags.add(field.tag)
+        for oneof in message_def.oneofs:
+            for field in oneof.fields:
+                used_tags.add(field.tag)
+        
+        for _, class_name in class_refs:
+            # 查找对应的字段标签
+            field_tag = self._find_tag_for_class(class_name, field_tags, used_tags)
+            if field_tag is None:
+                self.logger.warning(f"    ⚠️  无法找到类 {class_name} 的字段标签")
+                continue
+            
+            # 生成字段名
+            field_name = self._class_name_to_field_name(class_name)
+            
+            # 为oneof字段生成正确的类型名
+            # 如果是内部类（包含$），需要使用完整的类名来生成类型名
+            full_class_name = self._infer_full_dependency_class_name(class_name)
+            if '$' in full_class_name:
+                # 对于内部类，使用完整的类名部分（如Service$SkipRecovery）
+                class_part = full_class_name.split('.')[-1]  # Service$SkipRecovery
+                clean_class_name = class_part.replace('$', '')  # ServiceSkipRecovery
+            else:
+                # 对于普通类，直接清理$符号
+                clean_class_name = class_name.replace('$', '')
+            
+            # 创建字段定义
+            field_def = FieldDefinition(
+                name=field_name,
+                type_name=clean_class_name,
+                tag=field_tag,
+                rule='optional'
+            )
+            
+            # 保存完整的类名信息，用于导入路径生成
+            field_def.full_class_name = full_class_name
+            
+            message_def.fields.append(field_def)
+            self.logger.info(f"    ✅ 添加消息字段: {field_name} = {field_tag} ({clean_class_name})")
+            
+            # 记录依赖类
+            self._record_dependency_class(class_name)
+    
+    def _find_tag_for_class(self, class_name: str, field_tags: dict, used_tags: set = None) -> Optional[int]:
+        """
+        为类名查找对应的字段标签，完全基于Java源码分析
+        
+        Args:
+            class_name: 类名（如"SkipRecovery"）
+            field_tags: 字段标签映射
+            used_tags: 已使用的字段标签集合
+            
+        Returns:
+            字段标签，如果找不到则返回None
+        """
+        if used_tags is None:
+            used_tags = set()
+        # 完全基于Java源码分析，智能推断字段标签
+        
+        # 1. 直接匹配：类名转换为字段名
+        direct_field_name = self._to_snake_case(class_name) + '_'
+        if direct_field_name in field_tags:
+            self.logger.debug(f"    🎯 直接匹配类 {class_name}: {direct_field_name} -> {field_tags[direct_field_name]}")
+            return field_tags[direct_field_name]
+        
+        # 2. 小写匹配
+        lowercase_field_name = class_name.lower() + '_'
+        if lowercase_field_name in field_tags:
+            self.logger.debug(f"    🎯 小写匹配类 {class_name}: {lowercase_field_name} -> {field_tags[lowercase_field_name]}")
+            return field_tags[lowercase_field_name]
+        
+        # 3. 智能模式匹配：处理各种命名约定
+        # 移除常见后缀并尝试匹配
+        class_variants = [class_name]
+        if class_name.endswith('Result'):
+            class_variants.append(class_name[:-6])  # 移除Result
+        if class_name.endswith('Info'):
+            class_variants.append(class_name[:-4])  # 移除Info
+        if class_name.endswith('Data'):
+            class_variants.append(class_name[:-4])  # 移除Data
+        
+        for variant in class_variants:
+            for suffix in ['_', 'result_', 'info_', 'data_']:
+                test_field_name = variant.lower() + suffix
+                if test_field_name in field_tags:
+                    self.logger.debug(f"    🎯 变体匹配类 {class_name}: {test_field_name} -> {field_tags[test_field_name]}")
+                    return field_tags[test_field_name]
+        
+        # 4. 模糊匹配：在字段名中查找类名
+        class_lower = class_name.lower()
+        for field_name, tag in field_tags.items():
+            # 跳过已使用的标签
+            if tag in used_tags:
+                self.logger.debug(f"    ⏭️  跳过已使用的标签: {field_name} -> {tag}")
+                continue
+                
+            field_clean = field_name.lower().rstrip('_')
+            if class_lower == field_clean or class_lower in field_clean:
+                self.logger.debug(f"    🎯 模糊匹配类 {class_name}: {field_name} -> {tag}")
+                return tag
+        
+        # 5. 使用Java源码分析器获取更精确的信息
+        if self.java_source_analyzer:
+            tag = self._get_class_field_tag_from_source(class_name)
+            if tag is not None:
+                self.logger.debug(f"    🎯 源码分析匹配类 {class_name}: -> {tag}")
+                return tag
+        
+        return None
+    
+    def _get_class_field_tag_from_source(self, class_name: str) -> Optional[int]:
+        """
+        从Java源码中获取类对应的字段标签
+        
+        Args:
+            class_name: 类名
+            
+        Returns:
+            字段标签，如果找不到则返回None
+        """
+        if not self.java_source_analyzer:
+            return None
+        
+        try:
+            # 尝试通过Java源码分析器获取字段标签
+            # 查找形如 CLASSNAME_FIELD_NUMBER 的常量
+            possible_constant_names = [
+                f"{class_name.upper()}_FIELD_NUMBER",
+                f"{self._to_snake_case(class_name).upper()}_FIELD_NUMBER", 
+                f"{class_name.upper()}",
+                f"{class_name.upper()}_NUMBER",
+                # 处理缩写情况，如 SkipRecovery -> SKIP_FIELD_NUMBER
+                f"{class_name.upper()[:4]}_FIELD_NUMBER",  # 前4个字符
+                f"{class_name.upper()[:5]}_FIELD_NUMBER",  # 前5个字符
+                f"{class_name.upper()[:6]}_FIELD_NUMBER",  # 前6个字符
+                # 处理常见的缩写模式
+                f"{class_name.replace('Recovery', '').upper()}_FIELD_NUMBER",  # 移除Recovery
+                f"{class_name.replace('Info', '').upper()}_FIELD_NUMBER",      # 移除Info
+                f"{class_name.replace('Data', '').upper()}_FIELD_NUMBER",      # 移除Data
+                f"{class_name.replace('Result', '').upper()}_FIELD_NUMBER",    # 移除Result
+            ]
+            
+            for constant_name in possible_constant_names:
+                # 尝试从Java源码中提取常量值
+                tag = self.java_source_analyzer._extract_constant_value(constant_name)
+                if tag is not None:
+                    self.logger.debug(f"    🎯 从源码获取字段标签: {class_name} -> {constant_name} = {tag}")
+                    return tag
+            
+            return None
+            
+        except Exception as e:
+            self.logger.debug(f"    ⚠️  源码分析失败: {e}")
+            return None
+    
+    def _to_snake_case(self, camel_str: str) -> str:
+        """
+        将驼峰命名转换为蛇形命名
+        
+        Args:
+            camel_str: 驼峰命名字符串
+            
+        Returns:
+            蛇形命名字符串
+        """
+        # 处理$符号
+        camel_str = camel_str.replace('$', '_')
+        
+        # 在大写字母前插入下划线
+        result = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', camel_str)
+        
+        # 转换为小写
+        result = result.lower()
+        
+        # 清理连续的下划线
+        result = re.sub(r'_+', '_', result)
+        
+        # 移除首尾下划线
+        return result.strip('_')
+    
+    def _class_name_to_field_name(self, class_name: str) -> str:
+        """
+        将类名转换为字段名
+        
+        Args:
+            class_name: 类名（如"SkipRecovery"）
+            
+        Returns:
+            字段名（如"skip_recovery"）
+        """
+        # 移除$符号并转换为snake_case
+        clean_name = class_name.replace('$', '')
+        return self._to_snake_case(clean_name)
+    
+    def _record_dependency_class(self, class_name: str) -> None:
+        """
+        记录依赖类，用于后续处理
+        
+        Args:
+            class_name: 类名
+        """
+        # 记录依赖类到实例变量中，供重构器获取
+        if not hasattr(self, 'discovered_dependencies'):
+            self.discovered_dependencies = []
+        
+        # 构造完整的类名，智能处理内部类情况
+        full_class_name = self._infer_full_dependency_class_name(class_name)
+        
+        if full_class_name not in self.discovered_dependencies:
+            self.discovered_dependencies.append(full_class_name)
+            self.logger.info(f"    📦 记录依赖类: {full_class_name}")
+    
+    def _infer_full_dependency_class_name(self, class_name: str) -> str:
+        """
+        推断依赖类的完整类名，特别处理内部类情况
+        
+        Args:
+            class_name: 简单类名（如SkipRecovery）
+            
+        Returns:
+            完整的类名
+        """
+        # 如果已经是完整类名，直接返回
+        if '.' in class_name:
+            return class_name
+        
+        # 尝试从当前处理的类推断包名和外部类
+        current_class = getattr(self, '_current_processing_class', None)
+        if current_class and '$' in current_class:
+            # 当前类是内部类，依赖类可能是同一外部类的其他内部类
+            # 如：com.example.Service$CompleteRequest -> com.example.Service$SkipRecovery
+            parts = current_class.split('$')
+            if len(parts) >= 2:
+                outer_class = parts[0]  # com.example.Service
+                full_class_name = f"{outer_class}${class_name}"
+                self.logger.debug(f"    🔍 推断内部类依赖: {class_name} -> {full_class_name}")
+                return full_class_name
+        
+        # 如果当前类有包名，使用相同的包名
+        if current_class and '.' in current_class:
+            # 提取包名部分
+            last_dot = current_class.rfind('.')
+            if last_dot != -1:
+                package_name = current_class[:last_dot]
+                full_class_name = f"{package_name}.{class_name}"
+                self.logger.debug(f"    🔍 推断包级依赖: {class_name} -> {full_class_name}")
+                return full_class_name
+        
+        # 最后的备选方案：使用默认包名
+        full_class_name = f"com.truecaller.accountonboarding.v1.{class_name}"
+        self.logger.debug(f"    🔍 使用默认包名: {class_name} -> {full_class_name}")
+        return full_class_name
+    
+    def get_discovered_dependencies(self) -> List[str]:
+        """
+        获取在解析过程中发现的依赖类
+        
+        Returns:
+            依赖类名列表
+        """
+        return getattr(self, 'discovered_dependencies', [])
     
     def _determine_field_rule(self, field_type_byte: int, field_type_name: str = None, java_type: str = None) -> str:
         """
@@ -766,7 +1229,45 @@ class InfoDecoder:
     def _parse_oneof_fields(self, message_def: MessageDefinition, bytes_data: List[int], 
                            objects: List[str], oneof_positions: List[int]) -> None:
         """
-        解析oneof字段
+        解析oneof字段（增强版，支持Java源码字段标签）
+        
+        Args:
+            message_def: 消息定义对象
+            bytes_data: 字节数组
+            objects: 对象数组
+            oneof_positions: oneof标记位置列表
+        """
+        self.logger.info(f"    🎯 开始解析oneof字段")
+        self.logger.info(f"    📊 Objects数组: {objects}")
+        self.logger.info(f"    📊 oneof_positions: {oneof_positions}")
+        
+        # 首先尝试从Java源码获取字段标签
+        field_tags = None
+        if hasattr(self, 'java_parser') and self.java_parser:
+            try:
+                # 获取当前类的Java文件路径
+                java_file_path = getattr(self, '_current_java_file_path', None)
+                if java_file_path:
+                    field_tags = self.java_parser.extract_field_tags(java_file_path)
+                    if field_tags:
+                        self.logger.info(f"    🏷️ 获取到字段标签: {field_tags}")
+            except Exception as e:
+                self.logger.debug(f"    ⚠️  获取字段标签失败: {e}")
+        
+        # 如果有字段标签，使用新的解析逻辑
+        if field_tags:
+            self.logger.info(f"    🎯 使用Java源码字段标签解析oneof")
+            # 先处理普通字段
+            self._parse_fields_with_java_tags(message_def, bytes_data, objects, field_tags)
+        else:
+            # 回退到旧的字节码解析逻辑
+            self.logger.info(f"    🎯 使用字节码解析oneof")
+            self._parse_oneof_fields_legacy(message_def, bytes_data, objects, oneof_positions)
+    
+    def _parse_oneof_fields_legacy(self, message_def: MessageDefinition, bytes_data: List[int], 
+                                  objects: List[str], oneof_positions: List[int]) -> None:
+        """
+        传统的oneof字段解析方法（作为备用）
         
         Args:
             message_def: 消息定义对象
