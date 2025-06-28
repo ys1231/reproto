@@ -1,3 +1,5 @@
 # 项目依赖
 # 使用 loguru 库来提供强大且易于配置的日志记录功能。
 loguru 
+# 使用 packaging 库来进行版本号比较
+packaging 

@@ -29,11 +29,13 @@ try:
     from .core.reconstructor import ProtoReconstructor
     from .utils.logger import setup_logger, get_logger
     from .utils.report_utils import print_results_summary
+    from .utils.version_checker import check_version_on_startup
 except ImportError:
     # 绝对导入（开发环境）
     from core.reconstructor import ProtoReconstructor
     from utils.logger import setup_logger, get_logger
     from utils.report_utils import print_results_summary
+    from utils.version_checker import check_version_on_startup
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -143,8 +145,9 @@ def main() -> None:
     处理流程：
     1. 解析和验证命令行参数
     2. 初始化日志系统
-    3. 创建重构器并执行重构
-    4. 输出结果统计信息
+    3. 启动版本检测（异步）
+    4. 创建重构器并执行重构
+    5. 输出结果统计信息
     """
     args = None
     try:
@@ -154,6 +157,9 @@ def main() -> None:
         # 初始化日志系统
         setup_logger(args.log_dir)
         logger = get_logger("main")
+        
+        # 启动版本检测（异步，不阻塞主程序）
+        check_version_on_startup()
         
         # 验证参数
         sources_dir, root_class, output_dir = validate_arguments(args)
