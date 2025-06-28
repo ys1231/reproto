@@ -10,7 +10,14 @@ Author: AI Assistant
 from pathlib import Path
 from typing import Optional, Dict
 import threading
-from utils.logger import get_logger
+
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from .logger import get_logger
+except ImportError:
+    # 绝对导入（开发环境）
+    from utils.logger import get_logger
 
 
 class FileContentCache:

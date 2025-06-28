@@ -23,9 +23,17 @@ from pathlib import Path
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.reconstructor import ProtoReconstructor
-from utils.logger import setup_logger, get_logger
-from utils.report_utils import print_results_summary
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from .core.reconstructor import ProtoReconstructor
+    from .utils.logger import setup_logger, get_logger
+    from .utils.report_utils import print_results_summary
+except ImportError:
+    # 绝对导入（开发环境）
+    from core.reconstructor import ProtoReconstructor
+    from utils.logger import setup_logger, get_logger
+    from utils.report_utils import print_results_summary
 
 
 def parse_arguments() -> argparse.Namespace:

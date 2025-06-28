@@ -16,9 +16,19 @@ import re
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 
-from models.message_definition import MessageDefinition, FieldDefinition, OneofDefinition
-from utils.logger import get_logger
-from utils.type_utils import type_mapper, naming_converter
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from ..models.message_definition import MessageDefinition, FieldDefinition, OneofDefinition
+    from ..utils.logger import get_logger
+    from ..utils.type_utils import type_mapper, naming_converter
+    from ..parsing.java_parser import JavaParser
+except ImportError:
+    # 绝对导入（开发环境）
+    from models.message_definition import MessageDefinition, FieldDefinition, OneofDefinition
+    from utils.logger import get_logger
+    from utils.type_utils import type_mapper, naming_converter
+    from parsing.java_parser import JavaParser
 
 
 class InfoDecoder:
@@ -40,7 +50,6 @@ class InfoDecoder:
         self.java_source_analyzer = java_source_analyzer
         
         # 导入JavaParser
-        from parsing.java_parser import JavaParser
         self.java_parser = JavaParser()
         
         # Protobuf字段类型映射表

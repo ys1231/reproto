@@ -2,7 +2,7 @@
 
 🔧 **从JADX反编译的Java源码自动重构Protobuf .proto文件**
 
-一个强大的逆向工程工具，能够从任何使用Google Protobuf Lite的Android应用中自动重构出完整的.proto文件结构。经过重大性能优化，执行效率提升20%+。
+一个强大的逆向工程工具，能够从任何使用Google Protobuf Lite的Android应用中自动重构出完整的.proto文件结构。
 
 ## ✨ 特性
 
@@ -12,91 +12,101 @@
 - 🌐 **通用性**: 适用于任何Android应用，无需硬编码映射
 - 🧠 **智能推断**: 从Java源码直接读取类型信息，确保高准确性
 - 📝 **标准输出**: 严格遵循Google Proto Style Guide
-- 🚀 **高性能**: 文件缓存系统 + 智能路径构造，执行速度提升20%+
-- 🛠️ **特殊类型支持**: MapFieldLite、Internal.ProtobufList、Google Well-Known Types
 
 ## 🛠️ 安装
 
+### 方式一：拉取代码
 ```bash
 # 克隆项目
-git clone https://github.com/ys1231/reproto.git
+git clone <repository_url>
 cd reproto
 
 # 安装依赖
 pip install -r requirements.txt
 ```
 
-## 📖 使用方法
-
-### 基本用法
+### 方式二：pip安装
 ```bash
-python main.py <java_sources_dir> <root_class> <output_dir> [--verbose]
+# 从本地构建安装
+pip install .
+
+# 在线安装
+pip install reproto
+```
+
+## 📖 使用
+
+### 命令行使用
+```bash
+# 基本用法 python main.py or 命令 reproto
+reproto <java_sources_dir> <root_class> <output_dir> [--verbose]
+
+# 示例：重构普通类
+reproto ./out_jadx/sources com.example.messaging.v1.models.MessageData ./protos_generated
+
+# 示例：重构内部类（注意：包含$的类名需要用单引号包裹）
+reproto ./out_jadx/sources 'com.example.account.v1.Models$Onboarded' ./output
+
+# 详细输出
+reproto ./out_jadx/sources com.example.Model ./output --verbose
+```
+
+### 代码使用
+```python
+# 作为包使用
+from core import ProtoReconstructor
+from utils.logger import setup_logger
+from pathlib import Path
+
+# 初始化
+setup_logger("./logs")
+sources_dir = Path("./out_jadx/sources")
+output_dir = Path("./protos_generated")
+
+# 创建重构器并执行
+reconstructor = ProtoReconstructor(sources_dir, output_dir)
+results = reconstructor.reconstruct_from_root("com.example.Model")
+
+# 查看结果
+for class_name, definition in results.items():
+    print(f"生成: {class_name} -> {definition.proto_filename}")
 ```
 
 ### 参数说明
 - `java_sources_dir`: JADX反编译的Java源码目录路径
-- `root_class`: 要重构的根类完整类名（如：com.example.Model）
+- `root_class`: 要重构的根类完整类名
 - `output_dir`: 生成的proto文件输出目录路径
 - `--verbose`: 显示详细处理信息
 
-### 示例
-```bash
-# 重构消息应用的数据模型
-python main.py ./out_jadx/sources com.example.messaging.v1.models.MessageData ./protos_generated --verbose
+## ⚠️ 注意事项
 
-# 重构内部类
-python main.py ./out_jadx/sources 'com.truecaller.accountonboarding.v1.Models$Onboarded' ./output --verbose
+### 重要提醒
+- **内部类命名**: 包含`$`符号的类名（如内部类）必须用**单引号包裹**
+  ```bash
+  # ✅ 正确
+  reproto ./sources 'com.example.Outer$Inner' ./output
+  
+  # ❌ 错误
+  reproto ./sources com.example.Outer$Inner ./output
+  ```
 
-# 重构包含特殊类型的类
-python main.py ./out_jadx/sources com.truecaller.search.v1.models.SearchResult ./output --verbose
-```
+### 使用建议
+1. **JADX反编译**: 先使用JADX反编译APK文件
+   ```bash
+   jadx -d out_jadx app.apk
+   ```
 
-## 🔍 工作原理
+2. **类名查找**: 在JADX GUI中找到目标Protobuf类的完整类名
 
-### 核心技术
-1. **字节码解析**: 逆向工程Google Protobuf Lite的`newMessageInfo`调用
-2. **依赖发现**: 递归分析Java文件中的类型引用
-3. **智能推断**: 基于字段名和对象数组推断枚举和消息类型
-4. **源码分析**: 直接从Java源码读取真实的字段类型声明
-5. **🆕 性能优化**: 文件缓存系统 + 直接路径构造，避免全目录扫描
+3. **输出目录**: 确保输出目录有写入权限
 
-### 解析流程
-```
-Java源码 → 字节码提取 → 类型解码 → 依赖发现 → 源码验证 → Proto生成
-    ↓
-🚀 性能优化: 文件缓存 + 智能路径构造 + 统一类型检测
-```
-
-## 📁 项目结构
-
-```
-reproto/
-├── main.py                     # 主程序入口
-├── core/                       # 核心组件
-│   ├── reconstructor.py        # 主协调器 (已优化)
-│   ├── info_decoder.py         # 字节码解码器
-│   └── bytecode_parser.py      # 字节码解析工具
-├── parsing/                    # 解析模块
-│   ├── java_parser.py          # Java文件解析器
-│   ├── enum_parser.py          # 枚举解析器 (🆕)
-│   └── java_source_analyzer.py # Java源码分析器 (已优化)
-├── generation/                 # 生成模块
-│   └── proto_generator.py      # Proto文件生成器
-├── models/                     # 数据模型
-│   └── message_definition.py   # 消息和枚举定义
-├── utils/                      # 工具函数 (大幅扩展)
-│   ├── logger.py              # 日志系统
-│   ├── file_utils.py          # 文件工具
-│   ├── file_cache.py          # 文件缓存系统 (🆕)
-│   └── type_utils.py          # 类型处理工具 (🆕)
-└── logs/                      # 日志文件目录
-```
+4. **日志查看**: 使用`--verbose`参数查看详细处理过程
 
 ## 📊 输出示例
 
 ### 输入：Java源码
 ```java
-public final class BulkSearchResult extends GeneratedMessageLite {
+public final class SearchResult extends GeneratedMessageLite {
     private MapFieldLite<String, Contact> contacts_;
     private Internal.ProtobufList<String> phoneNumbers_;
     
@@ -109,89 +119,56 @@ public final class BulkSearchResult extends GeneratedMessageLite {
 ```protobuf
 syntax = "proto3";
 
-package com.truecaller.search.v1.models;
+package com.example.search.v1.models;
 
-option java_package = "com.truecaller.search.v1.models";
+option java_package = "com.example.search.v1.models";
 option java_multiple_files = true;
 
-message BulkSearchResult {
+message SearchResult {
   map<string, Contact> contacts = 1;
   repeated string phone_numbers = 2;
 }
 ```
 
-## 🚀 性能优化亮点
+## 🛠️ 支持的特性
 
-### 🆕 重大性能提升
-- **总执行时间**: 从~81秒优化到~65秒，提升 **19.8%**
-- **基础类型检测**: 从2-3秒延迟优化为 **瞬间响应**，提升 **99%+**
-- **索引系统**: 移除未使用的索引系统，节省 **100%** 构建开销
-- **文件I/O**: 智能缓存系统，避免重复读取
+### Protobuf类型支持
+- ✅ 基础类型：`string`, `int32`, `int64`, `bool`, `float`, `double`
+- ✅ 消息类型：嵌套消息和引用消息
+- ✅ 枚举类型：完整的枚举值解析
+- ✅ 重复字段：`repeated` 类型
+- ✅ 映射字段：`map<key, value>` 类型
+- ✅ Oneof字段：互斥字段组
+- ✅ Google Well-Known Types
 
-### 🔧 技术优化
-1. **文件缓存系统**: 线程安全的文件内容缓存，避免重复I/O
-2. **直接路径构造**: 根据包名直接构造文件路径，避免全目录扫描
-3. **统一类型检测**: 使用`TypeMapper`统一处理所有类型转换
-4. **智能包名推断**: 基于包结构的智能类名解析
+### 特殊Java类型
+- `MapFieldLite<K, V>` → `map<K, V>`
+- `Internal.ProtobufList<T>` → `repeated T`
+- `Internal.IntList` → `repeated enum` (枚举列表)
 
-### 📈 性能监控
-```bash
-📊 文件缓存统计:
-   总请求数: 33
-   缓存命中: 0      # 表明程序高效，无重复读取
-   缓存未命中: 33   # 每个文件只读取一次
-   已缓存文件: 33   # 所有文件已缓存备用
+## 📁 项目结构
+
 ```
-
-## 🛠️ 特殊类型支持
-
-### MapFieldLite 支持
-```java
-// Java源码
-private MapFieldLite<String, Contact> contacts_;
-
-// 生成的Proto
-map<string, Contact> contacts = 1;
+reproto/
+├── main.py                     # 主程序入口
+├── core/                       # 核心组件
+│   ├── reconstructor.py        # 主协调器
+│   └── info_decoder.py         # 字节码解码器
+├── parsing/                    # 解析模块
+│   ├── java_parser.py          # Java文件解析器
+│   └── enum_parser.py          # 枚举解析器
+├── generation/                 # 生成模块
+│   └── proto_generator.py      # Proto文件生成器
+├── models/                     # 数据模型
+│   └── message_definition.py   # 消息和枚举定义
+├── utils/                      # 工具函数
+│   ├── logger.py              # 日志系统
+│   ├── file_cache.py          # 文件缓存系统
+│   ├── type_utils.py          # 类型处理工具
+│   └── report_utils.py        # 结果统计工具
+└── include/                    # Google Protobuf标准文件
+    └── google/protobuf/        # Well-Known Types
 ```
-
-### Internal.ProtobufList 支持
-```java
-// Java源码
-private Internal.ProtobufList<String> tags_;
-
-// 生成的Proto
-repeated string tags = 1;
-```
-
-### Google Well-Known Types
-- `google.protobuf.Any`
-- `google.protobuf.Timestamp`
-- `google.protobuf.Duration`
-- `google.protobuf.StringValue`
-- 等等...
-
-## 🚀 工作流程
-
-1. 使用JADX反编译Android应用：`jadx -d out_jadx app.apk`
-2. 运行ReProto指定根Protobuf类
-3. 自动解析所有相关类和依赖
-4. 🆕 智能缓存和路径优化，快速处理
-5. 生成完整的.proto文件结构
-
-## 📝 配置选项
-
-### 日志配置
-- 日志文件自动保存到 `./logs/` 目录
-- 文件格式: `reproto-YYYY-MM-DD-HH-MM-SS.log`
-- 使用 `--verbose` 参数查看详细处理过程
-- 🆕 性能统计和缓存监控信息
-
-### 输出格式
-生成的proto文件遵循Google Protobuf Style Guide：
-- 文件名：`snake_case.proto`
-- 字段名：`snake_case`
-- 消息名：`PascalCase`
-- 枚举值：`UPPER_SNAKE_CASE`
 
 ## 🔧 开发
 
@@ -201,72 +178,9 @@ poetry install
 poetry shell
 
 # 运行测试
-python main.py ../out_jadx/sources 'com.example.TestClass' ../test_output --verbose
-
-# 性能测试
-time python main.py ../out_jadx/sources com.truecaller.search.v1.models.SearchResult ../test_output
+reproto ../out_jadx/sources com.example.TestClass ../test_output --verbose
 ```
-
-## 🐛 故障排除
-
-### 常见问题
-
-1. **文件找不到错误**
-   ```bash
-   # 确保JADX输出目录正确
-   ls -la out_jadx/sources/com/example/
-   ```
-
-2. **内存不足**
-   ```bash
-   # 对于大型应用，增加Java堆内存
-   export JAVA_OPTS="-Xmx4g"
-   ```
-
-3. **性能问题**
-   ```bash
-   # 查看缓存统计，确认没有重复I/O
-   grep "缓存统计" logs/reproto-*.log
-   ```
-
-## 📊 支持的Protobuf特性
-
-| 特性 | 支持状态 | 示例 |
-|------|----------|------|
-| 基础类型 | ✅ 完整支持 | `string`, `int32`, `bool` |
-| 消息类型 | ✅ 完整支持 | `Contact`, `UserInfo` |
-| 枚举类型 | ✅ 完整支持 | `enum Status { ACTIVE = 0; }` |
-| repeated | ✅ 完整支持 | `repeated string tags` |
-| map | ✅ 完整支持 | `map<string, Contact> contacts` |
-| oneof | ✅ 完整支持 | `oneof data { ... }` |
-| 嵌套消息 | ✅ 完整支持 | `message Outer.Inner` |
-| Well-Known Types | ✅ 新增支持 | `google.protobuf.Timestamp` |
-
-## 🎯 最新更新 (v2.0)
-
-### 🚀 性能优化
-- 移除未使用的索引系统，提升执行效率20%+
-- 文件缓存系统，避免重复I/O操作
-- 智能路径构造，避免全目录扫描
-- 统一类型检测器，简化代码逻辑
-
-### 🆕 新增功能
-- MapFieldLite自动转换为标准map语法
-- Internal.ProtobufList支持
-- Google Protobuf Well-Known Types支持
-- 增强的枚举解析器
-- 详细的性能监控和统计
-
-### 🔧 技术改进
-- 代码复杂度显著降低
-- 内存使用优化
-- 错误处理增强
-- 日志系统改进
-
-## 📄 许可证
-
-本项目为私有项目，仅供授权用户使用。
 
 ---
 
-**�� 现在就体验20%+的性能提升！**
+**🚀 立即开始重构你的Protobuf文件！**

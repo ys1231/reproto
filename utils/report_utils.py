@@ -7,8 +7,14 @@
 import sys
 from typing import Dict, Any, TYPE_CHECKING
 
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
 if TYPE_CHECKING:
-    from core.reconstructor import ProtoReconstructor
+    try:
+        # 相对导入（包环境）
+        from ..core.reconstructor import ProtoReconstructor
+    except ImportError:
+        # 绝对导入（开发环境）
+        from core.reconstructor import ProtoReconstructor
 
 
 def print_results_summary(reconstructor: 'ProtoReconstructor', results: Dict[str, Any], logger, verbose: bool) -> None:

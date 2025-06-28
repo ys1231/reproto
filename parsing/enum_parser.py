@@ -8,8 +8,16 @@
 import re
 import os
 from typing import List, Optional, Dict, Tuple
-from models.message_definition import EnumDefinition, EnumValueDefinition
-from utils.logger import get_logger
+
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from ..models.message_definition import EnumDefinition, EnumValueDefinition
+    from ..utils.logger import get_logger
+except ImportError:
+    # 绝对导入（开发环境）
+    from models.message_definition import EnumDefinition, EnumValueDefinition
+    from utils.logger import get_logger
 
 
 class EnumParser:

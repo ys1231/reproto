@@ -6,8 +6,15 @@
 - 重构器：管理整个重构过程和依赖发现
 """
 
-from .info_decoder import InfoDecoder
-from .reconstructor import ProtoReconstructor, JavaSourceAnalyzer
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from .info_decoder import InfoDecoder
+    from .reconstructor import ProtoReconstructor, JavaSourceAnalyzer
+except ImportError:
+    # 绝对导入（开发环境）
+    from core.info_decoder import InfoDecoder
+    from core.reconstructor import ProtoReconstructor, JavaSourceAnalyzer
 
 __all__ = [
     'InfoDecoder',

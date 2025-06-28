@@ -15,16 +15,31 @@ from pathlib import Path
 from collections import deque
 from typing import Set, Dict, List, Optional, Tuple
 
-from parsing.java_parser import JavaParser
-from parsing.enum_parser import EnumParser
-from core.info_decoder import InfoDecoder
-from generation.proto_generator import ProtoGenerator
-from models.message_definition import MessageDefinition, EnumDefinition, EnumValueDefinition
-from utils.logger import get_logger
-from utils.file_cache import get_file_cache
-from utils.type_utils import type_mapper, naming_converter, TypeMapper, NamingConverter
-from utils.builtin_proto import get_builtin_manager
-from utils.type_index import get_type_index
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from ..parsing.java_parser import JavaParser
+    from ..parsing.enum_parser import EnumParser
+    from .info_decoder import InfoDecoder
+    from ..generation.proto_generator import ProtoGenerator
+    from ..models.message_definition import MessageDefinition, EnumDefinition, EnumValueDefinition
+    from ..utils.logger import get_logger
+    from ..utils.file_cache import get_file_cache
+    from ..utils.type_utils import type_mapper, naming_converter, TypeMapper, NamingConverter
+    from ..utils.builtin_proto import get_builtin_manager
+    from ..utils.type_index import get_type_index
+except ImportError:
+    # 绝对导入（开发环境）
+    from parsing.java_parser import JavaParser
+    from parsing.enum_parser import EnumParser
+    from core.info_decoder import InfoDecoder
+    from generation.proto_generator import ProtoGenerator
+    from models.message_definition import MessageDefinition, EnumDefinition, EnumValueDefinition
+    from utils.logger import get_logger
+    from utils.file_cache import get_file_cache
+    from utils.type_utils import type_mapper, naming_converter, TypeMapper, NamingConverter
+    from utils.builtin_proto import get_builtin_manager
+    from utils.type_index import get_type_index
 
 
 class JavaSourceAnalyzer:

@@ -10,8 +10,17 @@ Author: AI Assistant
 
 import re
 from typing import Dict, Set, List, Union
-from models.message_definition import MessageDefinition, FieldDefinition, EnumDefinition, EnumValueDefinition
-from utils.type_utils import type_mapper, naming_converter, field_name_processor
+
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from ..models.message_definition import MessageDefinition, FieldDefinition, EnumDefinition, EnumValueDefinition
+    from ..utils.type_utils import type_mapper, naming_converter, field_name_processor
+    from ..utils.logger import get_logger
+except ImportError:
+    # 绝对导入（开发环境）
+    from models.message_definition import MessageDefinition, FieldDefinition, EnumDefinition, EnumValueDefinition
+    from utils.type_utils import type_mapper, naming_converter, field_name_processor
 
 
 class ProtoGenerator:
@@ -70,7 +79,6 @@ class ProtoGenerator:
             return '\n'.join(lines)
             
         except Exception as e:
-            from utils.logger import get_logger
             logger = get_logger("proto_generator")
             logger.error(f"❌ 生成proto文件失败 {message_def.name if message_def else 'Unknown'}: {e}")
             raise
@@ -118,7 +126,6 @@ class ProtoGenerator:
             return '\n'.join(lines)
             
         except Exception as e:
-            from utils.logger import get_logger
             logger = get_logger("proto_generator")
             logger.error(f"❌ 生成枚举proto文件失败 {enum_def.name if enum_def else 'Unknown'}: {e}")
             raise
@@ -290,7 +297,6 @@ class ProtoGenerator:
                 return f'  {field_type} {field.name} = {field.tag};'
                 
         except Exception as e:
-            from utils.logger import get_logger
             logger = get_logger("proto_generator")
             logger.error(f"❌ 生成字段定义失败 {field.name if field else 'Unknown'}: {e}")
             raise

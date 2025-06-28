@@ -9,12 +9,23 @@
 - 报告工具：重构结果统计和展示
 """
 
-from .logger import setup_logger, get_logger
-from .file_cache import get_file_cache
-from .type_utils import type_mapper, naming_converter, field_name_processor
-from .builtin_proto import get_builtin_manager
-from .type_index import get_type_index
-from .report_utils import print_results_summary
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from .logger import setup_logger, get_logger
+    from .file_cache import get_file_cache
+    from .type_utils import type_mapper, naming_converter, field_name_processor
+    from .builtin_proto import get_builtin_manager
+    from .type_index import get_type_index
+    from .report_utils import print_results_summary
+except ImportError:
+    # 绝对导入（开发环境）
+    from utils.logger import setup_logger, get_logger
+    from utils.file_cache import get_file_cache
+    from utils.type_utils import type_mapper, naming_converter, field_name_processor
+    from utils.builtin_proto import get_builtin_manager
+    from utils.type_index import get_type_index
+    from utils.report_utils import print_results_summary
 
 __all__ = [
     'setup_logger',

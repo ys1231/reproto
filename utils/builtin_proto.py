@@ -7,7 +7,14 @@ import os
 import shutil
 from pathlib import Path
 from typing import Dict, Set, Optional
-from utils.logger import logger
+
+# 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
+try:
+    # 相对导入（包环境）
+    from .logger import logger
+except ImportError:
+    # 绝对导入（开发环境）
+    from utils.logger import logger
 
 
 def find_include_directory() -> Optional[Path]:
