@@ -324,16 +324,20 @@ class InfoDecoder:
                         field_type_name = 'int32'
                         rule = 'repeated'
                 else:
-                    # 普通类型 - 但需要检查是否为枚举类型
-                    if java_type in ['int', 'long', 'short', 'byte'] and self.java_source_analyzer:
-                        # 对于基础整数类型，检查是否有对应的枚举setter方法
-                        enum_type = self.java_source_analyzer._get_type_from_setter(field_name_raw.rstrip('_'))
-                        if enum_type:
-                            # 找到枚举setter，使用枚举类型
-                            field_type_name = self._convert_java_to_proto_type(enum_type)
-                            rule = 'optional'
+                    # 普通Java类型
+                    if java_type in ['int', 'long', 'short', 'byte']:
+                        # 基础整数类型可能对应枚举，但需要检查是否有对应的setter
+                        if self.java_source_analyzer:
+                            enum_type = self.java_source_analyzer._get_type_from_setter(field_name_raw.rstrip('_'))
+                            if enum_type:
+                                field_type_name = self._convert_java_to_proto_type(enum_type)
+                                rule = 'optional'
+                            else:
+                                # 确实是基础整数类型
+                                field_type_name = self._convert_java_to_proto_type(java_type)
+                                rule = 'optional'
                         else:
-                            # 没有枚举setter，使用基础类型
+                            # 确实是基础整数类型
                             field_type_name = self._convert_java_to_proto_type(java_type)
                             rule = 'optional'
                     else:
@@ -349,10 +353,10 @@ class InfoDecoder:
                 
                 self.logger.info(f"    🔍 从Java源码获取类型: {field_name_raw} -> {java_type} -> {field_type_name} (rule: {rule})")
             else:
-                # 使用默认类型
-                field_type_name = 'string'
-                rule = 'optional'
-                self.logger.info(f"    🔍 使用默认类型: {field_name_raw} -> {field_type_name}")
+                # Java源码分析失败，这是一个严重错误
+                error_msg = f"❌ Java源码分析失败: 无法获取字段 {field_name_raw} 的类型信息"
+                self.logger.error(error_msg)
+                raise ValueError(f"字段类型分析失败: {field_name_raw}. 请检查Java源码是否完整或字段声明是否正确。")
             
             # 记录字段信息
             self.logger.info(f"    📝 字段信息: name={field_name}, type={field_type_name}, tag={field_tag}")

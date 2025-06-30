@@ -9,19 +9,31 @@ Author: AI Assistant
 """
 
 import re
-from typing import Dict, Set, List, Union
+from typing import Dict, Set, List, Union, Optional
 
 # 智能导入：同时支持相对导入（包环境）和绝对导入（开发环境）
 try:
     # 相对导入（包环境）
     from ..models.message_definition import MessageDefinition, FieldDefinition, EnumDefinition, EnumValueDefinition
-    from ..utils.type_utils import type_mapper, naming_converter, field_name_processor
+    from ..utils.type_utils import type_mapper, naming_converter, field_name_processor, TypeMapper
     from ..utils.logger import get_logger
 except ImportError:
     # 绝对导入（开发环境）
     from models.message_definition import MessageDefinition, FieldDefinition, EnumDefinition, EnumValueDefinition
-    from utils.type_utils import type_mapper, naming_converter, field_name_processor
+    from utils.type_utils import type_mapper, naming_converter, field_name_processor, TypeMapper
+    from utils.logger import get_logger
 
+# 常量定义
+BASIC_PROTO_TYPES = {
+    'string', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
+    'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'float', 'double', 'bytes'
+}
+
+BASIC_JAVA_TYPES = {
+    'string', 'int', 'long', 'boolean', 'bool', 'float', 'double', 'bytes',
+    'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
+    'fixed32', 'fixed64', 'sfixed32', 'sfixed64'
+}
 
 class ProtoGenerator:
     """
@@ -351,40 +363,17 @@ class ProtoGenerator:
             return None
             
         # 检查基础类型
-        basic_proto_types = {
-            'string', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
-            'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'float', 'double', 'bytes'
-        }
-        
-        if field.type_name in basic_proto_types:
+        if field.type_name in BASIC_PROTO_TYPES:
             return None
-        
-        # 检查是否为Google Protobuf内置类型
-        try:
-            from utils.builtin_proto import get_builtin_manager
-            builtin_manager = get_builtin_manager()
-            if builtin_manager.is_builtin_type(field.type_name):
-                return builtin_manager.get_import_path(field.type_name)
-        except (ImportError, ValueError):
-            # 如果内置管理器不可用，继续使用原有逻辑
-            pass
         
         # 处理map类型：map<string, Contact> -> 提取值类型Contact
         if field.type_name.startswith('map<'):
-            # 解析map类型：map<key_type, value_type>
-            import re
-            match = re.match(r'map<([^,]+),\s*([^>]+)>', field.type_name)
-            if match:
-                key_type, value_type = match.groups()
-                key_type = key_type.strip()
-                value_type = value_type.strip()
-                
-                # 只处理值类型的导入（键类型通常是基础类型）
-                if value_type not in basic_proto_types:
-                    full_class_name = self._resolve_full_class_name(value_type, current_package, all_messages)
-                    if full_class_name:
-                        return self._class_name_to_import_path(full_class_name)
-            return None
+            return self._handle_map_type_import(field.type_name, current_package, all_messages)
+        
+        # 检查是否为Google Protobuf内置类型
+        builtin_import = self._handle_builtin_type_import(field.type_name)
+        if builtin_import:
+            return builtin_import
         
         # 跳过通用类型标识符
         generic_types = {'enum', 'message'}
@@ -394,10 +383,8 @@ class ProtoGenerator:
         # 检查是否为枚举类型
         if all_enums:
             for enum_full_name, enum_def in all_enums.items():
-                # 检查是否匹配混淆的枚举名或原始枚举名
-                enum_class_name = enum_full_name.split('.')[-1]  # 获取类名部分
+                enum_class_name = enum_full_name.split('.')[-1]
                 if field.type_name == enum_class_name or field.type_name == enum_def.name:
-                    # 生成枚举文件的导入路径
                     return self._class_name_to_import_path(enum_full_name)
         
         # 优先使用字段定义中保存的完整类名信息（用于内部类等特殊情况）
@@ -408,6 +395,71 @@ class ProtoGenerator:
         full_class_name = self._resolve_full_class_name(field.type_name, current_package, all_messages)
         if full_class_name:
             return self._class_name_to_import_path(full_class_name)
+        
+        return None
+    
+    def _handle_builtin_type_import(self, type_name: str) -> Optional[str]:
+        """
+        处理Google Protobuf内置类型的导入
+        
+        Args:
+            type_name: 类型名
+            
+        Returns:
+            导入路径，如果不是内置类型则返回None
+        """
+        if not type_name.startswith('google.protobuf.'):
+            return None
+            
+        try:
+            from utils.builtin_proto import get_builtin_manager
+            builtin_manager = get_builtin_manager()
+            if builtin_manager.is_builtin_type(type_name):
+                import_path = builtin_manager.get_import_path(type_name)
+                if import_path:
+                    # 确保内置proto文件被拷贝到输出目录
+                    builtin_manager.ensure_builtin_proto_file(type_name)
+                    return import_path
+        except (ImportError, ValueError) as e:
+            # 如果内置管理器不可用，记录错误但继续处理
+            logger = get_logger("proto_generator")
+            logger.warning(f"内置proto管理器不可用: {e}")
+        
+        return None
+    
+    def _handle_map_type_import(self, map_type: str, current_package: str, 
+                               all_messages: Dict[str, MessageDefinition]) -> Optional[str]:
+        """
+        处理map类型的导入
+        
+        Args:
+            map_type: map类型字符串，如"map<string, Contact>"
+            current_package: 当前包名
+            all_messages: 所有消息定义
+            
+        Returns:
+            导入路径，如果不需要导入则返回None
+        """
+        # 解析map类型：map<key_type, value_type>
+        import re
+        match = re.match(r'map<([^,]+),\s*([^>]+)>', map_type)
+        if not match:
+            return None
+            
+        key_type, value_type = match.groups()
+        key_type = key_type.strip()
+        value_type = value_type.strip()
+        
+        # 检查值类型是否为Google Protobuf内置类型
+        builtin_import = self._handle_builtin_type_import(value_type)
+        if builtin_import:
+            return builtin_import
+        
+        # 只处理值类型的导入（键类型通常是基础类型）
+        if value_type not in BASIC_PROTO_TYPES:
+            full_class_name = self._resolve_full_class_name(value_type, current_package, all_messages)
+            if full_class_name:
+                return self._class_name_to_import_path(full_class_name)
         
         return None
     
@@ -425,13 +477,7 @@ class ProtoGenerator:
             完整的类名，如果是基础类型则返回None
         """
         # 检查是否为基础类型
-        basic_types = {
-            'string', 'int', 'long', 'boolean', 'bool', 'float', 'double', 'bytes',
-            'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64',
-            'fixed32', 'fixed64', 'sfixed32', 'sfixed64'
-        }
-        
-        if type_name in basic_types:
+        if type_name in BASIC_JAVA_TYPES:
             return None
         
         # 如果是完整的类名，直接返回

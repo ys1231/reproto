@@ -59,32 +59,9 @@ class JavaSourceAnalyzer:
         self._current_class_name = class_name
         self._current_class_content = self._load_class_content(class_name)
     
-    def get_raw_field_type(self, field_name_raw: str) -> Optional[str]:
-        """
-        获取字段的原始Java类型
-        
-        Args:
-            field_name_raw: 原始字段名（如 latitude_）
-            
-        Returns:
-            字段的Java原始类型，如果找不到则返回None
-        """
-        if not self._current_class_name:
-            return None
-        
-        # 构建Java文件路径
-        file_path = self._current_class_name.replace('.', '/') + '.java'
-        java_file_path = self.sources_dir / file_path
-        
-        if not java_file_path.exists():
-            return None
-        
-        # 使用JavaParser获取字段类型
-        return self.java_parser.get_raw_field_type(java_file_path, field_name_raw)
-    
     def get_field_type(self, field_name_raw: str, expected_type: str) -> Optional[str]:
         """
-        从Java源码中获取字段的真实类型
+        从Java源码中获取字段的真实类型 - 使用简单字符串解析避免正则表达式卡死
         
         Args:
             field_name_raw: 原始字段名（如 contacts_）
@@ -96,77 +73,170 @@ class JavaSourceAnalyzer:
         if not self._current_class_content:
             return None
         
-        # 清理字段名
+        # 首先尝试使用JavaParser的现有方法
+        if self._current_class_name:
+            file_path = self._current_class_name.replace('.', '/') + '.java'
+            java_file_path = self.sources_dir / file_path
+            
+            if java_file_path.exists():
+                raw_type = self.java_parser.get_raw_field_type(java_file_path, field_name_raw)
+                if raw_type:
+                    return self._process_raw_field_type(raw_type, field_name_raw)
+        
+        # 如果JavaParser方法失败，使用简单的字符串搜索
+        return self._simple_field_type_search(field_name_raw, expected_type)
+    
+    def _process_raw_field_type(self, raw_type: str, field_name_raw: str) -> Optional[str]:
+        """
+        处理从JavaParser获取的原始字段类型
+        
+        Args:
+            raw_type: JavaParser返回的原始类型
+            field_name_raw: 原始字段名
+            
+        Returns:
+            处理后的类型名
+        """
+        if not raw_type:
+            return None
+        
+        # 清理类型名
+        clean_type = raw_type.strip()
+        
+        # 处理基础Java类型
+        basic_java_types = {
+            'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
+            'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
+            'Byte', 'Short', 'Character'
+        }
+        
+        if clean_type in basic_java_types:
+            return clean_type
+        
+        # 处理集合类型
+        if clean_type.startswith('Internal.ProtobufList<') and clean_type.endswith('>'):
+            return clean_type
+        elif clean_type.startswith('MapFieldLite<') and clean_type.endswith('>'):
+            return clean_type
+        elif clean_type.startswith('List<') and clean_type.endswith('>'):
+            return clean_type
+        elif clean_type == 'Internal.IntList':
+            return clean_type
+        
+        # 如果是简单类名（没有包名），查找import语句获取完整包名
+        if '.' not in clean_type:
+            # 首先尝试直接查找类型的import
+            full_type = self._find_import_for_type(clean_type)
+            if full_type:
+                return full_type
+            
+            # 如果是内部类，尝试查找外部类的import
+            if '$' in clean_type:
+                outer_class = clean_type.split('$')[0]  # Models$Installation -> Models
+                outer_full_type = self._find_import_for_type(outer_class)
+                if outer_full_type:
+                    # 替换外部类名为完整类名
+                    return clean_type.replace(outer_class, outer_full_type)
+            
+            # 如果没有找到import，假设在同一个包中
+            if self._current_class_name:
+                package_name = '.'.join(self._current_class_name.split('.')[:-1])
+                return f"{package_name}.{clean_type}"
+        
+        # 如果已经是完整类名，直接返回
+        return clean_type
+    
+    def _simple_field_type_search(self, field_name_raw: str, expected_type: str) -> Optional[str]:
+        """
+        使用简单字符串搜索获取字段类型，避免复杂正则表达式
+        
+        Args:
+            field_name_raw: 原始字段名
+            expected_type: 期望的类型
+            
+        Returns:
+            字段类型
+        """
+        if not self._current_class_content:
+            return None
+        
+        # 将内容按行分割，查找包含字段名的行
+        lines = self._current_class_content.split('\n')
         field_name = field_name_raw.rstrip('_')
         
-        # 查找字段声明模式，支持多种声明格式
-        patterns = [
-            # Internal.ProtobufList<Contact> contacts_ = ...
-            rf'private\s+Internal\.ProtobufList<([^>]+)>\s+{re.escape(field_name)}_\s*=',
-            # MapFieldLite<String, Contact> contacts_ = ...
-            rf'private\s+MapFieldLite<([^,]+),\s*([^>]+)>\s+{re.escape(field_name)}_\s*=',
-            # List<Contact> contacts_ = ...
-            rf'private\s+List<([^>]+)>\s+{re.escape(field_name)}_\s*=',
-            # Internal.IntList badges_ = ... (用于枚举列表)
-            rf'private\s+(Internal\.IntList)\s+{re.escape(field_name)}_\s*=',
-            # 普通字段声明: private Contact contact_ = ...
-            rf'private\s+(\w+(?:\.\w+)*)\s+{re.escape(field_name)}_\s*=',
-            # 简单字段声明: private Contact contact_;
-            rf'private\s+(\w+(?:\.\w+)*)\s+{re.escape(field_name)}_\s*;'
-        ]
+        for line in lines:
+            line = line.strip()
+            
+            # 跳过注释行
+            if line.startswith('//') or line.startswith('/*') or line.startswith('*'):
+                continue
+            
+            # 查找字段声明行
+            if (f' {field_name_raw}' in line or f' {field_name_raw};' in line or f' {field_name_raw} =' in line) and 'private' in line:
+                # 解析字段声明行
+                field_type = self._parse_field_declaration_line(line, field_name_raw)
+                if field_type:
+                    return field_type
         
-        for i, pattern in enumerate(patterns):
-            matches = re.findall(pattern, self._current_class_content)
-            if matches:
-                if i == 0:  # Internal.ProtobufList<Contact>
-                    element_type = matches[0]
-                    return f"Internal.ProtobufList<{element_type}>"
-                elif i == 1:  # MapFieldLite<String, Contact>
-                    key_type, value_type = matches[0]
-                    return f"MapFieldLite<{key_type.strip()}, {value_type.strip()}>"
-                elif i == 2:  # List<Contact>
-                    element_type = matches[0]
-                    return f"List<{element_type}>"
-                elif i == 3:  # Internal.IntList
-                    return "Internal.IntList"
-                else:  # 普通类型
-                    simple_type = matches[0]
-                    
-                    # 检查是否为Java基础类型，如果是则直接返回
-                    basic_java_types = {
-                        'int', 'long', 'float', 'double', 'boolean', 'byte', 'short', 'char',
-                        'String', 'Object', 'Integer', 'Long', 'Float', 'Double', 'Boolean',
-                        'Byte', 'Short', 'Character'
-                    }
-                    
-                    if simple_type in basic_java_types:
-                        return simple_type  # 直接返回基础类型，不添加包名
-                    
-                    # 如果字段声明是基础类型（如int），但期望类型是enum，尝试从setter方法获取真实类型
-                    if expected_type == 'enum' and simple_type in ['int', 'long', 'short', 'byte']:
-                        setter_type = self._get_type_from_setter(field_name)
-                        if setter_type:
-                            return setter_type
-                        continue
-                    
-                    # 特殊处理：Internal.IntList可能对应枚举列表
-                    if simple_type == 'Internal.IntList':
-                        # 检查是否有对应的枚举setter方法
-                        enum_type = self._get_enum_type_from_list_setter(field_name)
-                        if enum_type:
-                            return f"Internal.ProtobufList<{enum_type}>"
-                    
-                    # 查找import语句获取完整类名
-                    import_pattern = rf'import\s+([^;]*\.{re.escape(simple_type)});'
-                    import_matches = re.findall(import_pattern, self._current_class_content)
-                    
-                    if import_matches:
-                        return import_matches[0]  # 返回完整的包名.类名
-                    else:
-                        # 如果没有import，假设在同一个包中
-                        if self._current_class_name:
-                            package_name = '.'.join(self._current_class_name.split('.')[:-1])
-                            return f"{package_name}.{simple_type}"
+        return None
+    
+    def _parse_field_declaration_line(self, line: str, field_name_raw: str) -> Optional[str]:
+        """
+        解析字段声明行，提取类型信息
+        
+        Args:
+            line: 字段声明行
+            field_name_raw: 原始字段名
+            
+        Returns:
+            字段类型
+        """
+        # 移除多余空格
+        line = ' '.join(line.split())
+        
+        # 查找字段名的位置
+        field_pos = line.find(f' {field_name_raw}')
+        if field_pos == -1:
+            return None
+        
+        # 提取字段名之前的部分
+        before_field = line[:field_pos].strip()
+        
+        # 分割为单词
+        words = before_field.split()
+        
+        # 从后往前查找类型（跳过修饰符）
+        modifiers = {'private', 'public', 'protected', 'static', 'final', 'volatile', 'transient'}
+        
+        for i in range(len(words) - 1, -1, -1):
+            word = words[i]
+            if word not in modifiers:
+                # 这应该是类型
+                return word
+        
+        return None
+    
+    def _find_import_for_type(self, simple_type: str) -> Optional[str]:
+        """
+        查找类型的import语句
+        
+        Args:
+            simple_type: 简单类型名
+            
+        Returns:
+            完整的包名.类名
+        """
+        if not self._current_class_content:
+            return None
+        
+        # 查找import语句
+        lines = self._current_class_content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('import ') and line.endswith(f'.{simple_type};'):
+                # 提取完整类名
+                import_statement = line[7:-1]  # 移除 'import ' 和 ';'
+                return import_statement
         
         return None
     
