@@ -489,15 +489,8 @@ class InfoDecoder:
             field_name = self._class_name_to_field_name(class_name)
             
             # 为oneof字段生成正确的类型名
-            # 如果是内部类（包含$），需要使用完整的类名来生成类型名
-            full_class_name = self._infer_full_dependency_class_name(class_name)
-            if '$' in full_class_name:
-                # 对于内部类，使用完整的类名部分（如Service$SkipRecovery）
-                class_part = full_class_name.split('.')[-1]  # Service$SkipRecovery
-                clean_class_name = class_part.replace('$', '')  # ServiceSkipRecovery
-            else:
-                # 对于普通类，直接清理$符号
-                clean_class_name = class_name.replace('$', '')
+            # 直接使用原始类名，将$替换为_符号，符合protobuf命名规范
+            clean_class_name = class_name.replace('$', '_')
             
             # 创建字段定义
             field_def = FieldDefinition(
@@ -656,23 +649,41 @@ class InfoDecoder:
             return None
         
         try:
+            # 处理内部类名称：Models$Onboarded -> Onboarded
+            simple_class_name = class_name
+            if '$' in class_name:
+                simple_class_name = class_name.split('$')[-1]  # 取最后一部分
+            
             # 尝试通过Java源码分析器获取字段标签
             # 查找形如 CLASSNAME_FIELD_NUMBER 的常量
             possible_constant_names = [
+                # 使用简化的类名（最重要的模式）
+                f"{simple_class_name.upper()}_FIELD_NUMBER",
+                f"{self._to_snake_case(simple_class_name).upper()}_FIELD_NUMBER",
+                # 对于特殊命名，去掉常见后缀
+                f"{simple_class_name.replace('Required', '').upper()}_FIELD_NUMBER",  # AttestationRequired -> ATTESTATION_FIELD_NUMBER
+                f"{simple_class_name.replace('Error', '').upper()}_FIELD_NUMBER",     # HandledError -> HANDLED_FIELD_NUMBER
+                f"{simple_class_name.replace('Found', '').upper()}_FIELD_NUMBER",     # BackUpFound -> BACKUP_FIELD_NUMBER
+                f"{simple_class_name.replace('Otp', '').upper()}_FIELD_NUMBER",       # ExpectingOtp -> EXPECTING_FIELD_NUMBER
+                # 使用完整类名（备选方案）
                 f"{class_name.upper()}_FIELD_NUMBER",
                 f"{self._to_snake_case(class_name).upper()}_FIELD_NUMBER", 
                 f"{class_name.upper()}",
-                f"{class_name.upper()}_NUMBER",
-                # 处理缩写情况，如 SkipRecovery -> SKIP_FIELD_NUMBER
-                f"{class_name.upper()[:4]}_FIELD_NUMBER",  # 前4个字符
-                f"{class_name.upper()[:5]}_FIELD_NUMBER",  # 前5个字符
-                f"{class_name.upper()[:6]}_FIELD_NUMBER",  # 前6个字符
-                # 处理常见的缩写模式
-                f"{class_name.replace('Recovery', '').upper()}_FIELD_NUMBER",  # 移除Recovery
-                f"{class_name.replace('Info', '').upper()}_FIELD_NUMBER",      # 移除Info
-                f"{class_name.replace('Data', '').upper()}_FIELD_NUMBER",      # 移除Data
-                f"{class_name.replace('Result', '').upper()}_FIELD_NUMBER",    # 移除Result
+                f"{simple_class_name.upper()}",
+                f"{simple_class_name.upper()}_NUMBER",
+                # 处理缩写情况
+                f"{simple_class_name.upper()[:4]}_FIELD_NUMBER",  # 前4个字符
+                f"{simple_class_name.upper()[:5]}_FIELD_NUMBER",  # 前5个字符
+                f"{simple_class_name.upper()[:6]}_FIELD_NUMBER",  # 前6个字符
+                # 特殊映射（基于实际观察到的模式）
+                "ERROR_FIELD_NUMBER" if simple_class_name.endswith('Error') else None,
+                "BACKUPFOUND_FIELD_NUMBER" if 'BackUp' in simple_class_name else None,
+                "ATTESTATIONREQUIRED_FIELD_NUMBER" if 'Attestation' in simple_class_name else None,
+                "EXPECTINGOTP_FIELD_NUMBER" if 'Expecting' in simple_class_name else None,
             ]
+            
+            # 过滤掉None值
+            possible_constant_names = [name for name in possible_constant_names if name is not None]
             
             for constant_name in possible_constant_names:
                 # 尝试从Java源码中提取常量值
@@ -749,7 +760,7 @@ class InfoDecoder:
         推断依赖类的完整类名，特别处理内部类情况
         
         Args:
-            class_name: 简单类名（如SkipRecovery）
+            class_name: 简单类名（如Models$Onboarded）
             
         Returns:
             完整的类名
@@ -758,31 +769,23 @@ class InfoDecoder:
         if '.' in class_name:
             return class_name
         
-        # 尝试从当前处理的类推断包名和外部类
+        # 获取当前处理的类
         current_class = getattr(self, '_current_processing_class', None)
-        if current_class and '$' in current_class:
-            # 当前类是内部类，依赖类可能是同一外部类的其他内部类
-            # 如：com.example.Service$CompleteRequest -> com.example.Service$SkipRecovery
-            parts = current_class.split('$')
-            if len(parts) >= 2:
-                outer_class = parts[0]  # com.example.Service
-                full_class_name = f"{outer_class}${class_name}"
-                self.logger.debug(f"    🔍 推断内部类依赖: {class_name} -> {full_class_name}")
-                return full_class_name
+        if not current_class:
+            self.logger.warning(f"    ⚠️  无法获取当前处理类，无法推断 {class_name} 的完整类名")
+            return class_name
         
-        # 如果当前类有包名，使用相同的包名
-        if current_class and '.' in current_class:
-            # 提取包名部分
+        # 动态提取当前类的包名
+        if '.' in current_class:
             last_dot = current_class.rfind('.')
-            if last_dot != -1:
-                package_name = current_class[:last_dot]
-                full_class_name = f"{package_name}.{class_name}"
-                self.logger.debug(f"    🔍 推断包级依赖: {class_name} -> {full_class_name}")
-                return full_class_name
+            package_name = current_class[:last_dot]
+        else:
+            self.logger.warning(f"    ⚠️  当前类 {current_class} 没有包名，无法推断依赖类包名")
+            return class_name
         
-        # 最后的备选方案：使用默认包名
-        full_class_name = f"com.truecaller.accountonboarding.v1.{class_name}"
-        self.logger.debug(f"    🔍 使用默认包名: {class_name} -> {full_class_name}")
+        # 直接使用包名+类名，不继承当前类的内部类结构
+        full_class_name = f"{package_name}.{class_name}"
+        self.logger.debug(f"    🔍 推断依赖类: {class_name} -> {full_class_name}")
         return full_class_name
     
     def get_discovered_dependencies(self) -> List[str]:
