@@ -482,15 +482,24 @@ class InfoDecoder:
             # 查找对应的字段标签
             field_tag = self._find_tag_for_class(class_name, field_tags, used_tags)
             if field_tag is None:
-                self.logger.warning(f"    ⚠️  无法找到类 {class_name} 的字段标签")
+                self.logger.error(f"    ⚠️  无法找到类 {class_name} 的字段标签")
                 continue
             
             # 生成字段名：SkipRecovery -> skip_recovery
             field_name = self._class_name_to_field_name(class_name)
             
             # 为oneof字段生成正确的类型名
-            # 直接使用原始类名，将$替换为_符号，符合protobuf命名规范
-            clean_class_name = class_name.replace('$', '_')
+            # 获取完整的类名并生成正确的类型名
+            full_class_name = self._infer_full_dependency_class_name(class_name)
+            
+            if self._is_oneof_option_class(class_name, getattr(self, '_current_processing_class', '')):
+                # 对于内部类，使用完整的类名生成类型名
+                # 例如：Models$ExpectingOtp$ExpectingSms -> Models_ExpectingOtp_ExpectingSms
+                class_part = full_class_name.split('.')[-1]  # Models$ExpectingOtp$ExpectingSms
+                clean_class_name = class_part.replace('$', '_')  # Models_ExpectingOtp_ExpectingSms
+            else:
+                # 对于独立类，直接使用类名并替换$符号
+                clean_class_name = class_name.replace('$', '_')
             
             # 创建字段定义
             field_def = FieldDefinition(
@@ -501,7 +510,7 @@ class InfoDecoder:
             )
             
             # 保存完整的类名信息，用于导入路径生成
-            field_def.full_class_name = self._infer_full_dependency_class_name(class_name)
+            field_def.full_class_name = full_class_name
             
             oneof_def.fields.append(field_def)
             self.logger.info(f"    ✅ 添加oneof字段: {field_name} = {field_tag} ({clean_class_name})")
@@ -534,7 +543,7 @@ class InfoDecoder:
             # 查找对应的字段标签
             field_tag = self._find_tag_for_class(class_name, field_tags, used_tags)
             if field_tag is None:
-                self.logger.warning(f"    ⚠️  无法找到类 {class_name} 的字段标签")
+                self.logger.error(f"    ⚠️  无法找到类 {class_name} 的字段标签")
                 continue
             
             # 生成字段名
@@ -638,6 +647,7 @@ class InfoDecoder:
     def _get_class_field_tag_from_source(self, class_name: str) -> Optional[int]:
         """
         从Java源码中获取类对应的字段标签
+        按照优先级顺序查找：独立类 -> 内部类 -> 匿名类 -> 主类
         
         Args:
             class_name: 类名
@@ -649,54 +659,150 @@ class InfoDecoder:
             return None
         
         try:
-            # 处理内部类名称：Models$Onboarded -> Onboarded
-            simple_class_name = class_name
-            if '$' in class_name:
-                simple_class_name = class_name.split('$')[-1]  # 取最后一部分
+            # 1. 优先查找：独立类（如果是独立类，标签在自己类中）
+            tag = self._find_tag_in_independent_class(class_name)
+            if tag is not None:
+                self.logger.debug(f"    🎯 独立类字段标签: {class_name} = {tag}")
+                return tag
             
-            # 尝试通过Java源码分析器获取字段标签
-            # 查找形如 CLASSNAME_FIELD_NUMBER 的常量
-            possible_constant_names = [
-                # 使用简化的类名（最重要的模式）
-                f"{simple_class_name.upper()}_FIELD_NUMBER",
-                f"{self._to_snake_case(simple_class_name).upper()}_FIELD_NUMBER",
-                # 对于特殊命名，去掉常见后缀
-                f"{simple_class_name.replace('Required', '').upper()}_FIELD_NUMBER",  # AttestationRequired -> ATTESTATION_FIELD_NUMBER
-                f"{simple_class_name.replace('Error', '').upper()}_FIELD_NUMBER",     # HandledError -> HANDLED_FIELD_NUMBER
-                f"{simple_class_name.replace('Found', '').upper()}_FIELD_NUMBER",     # BackUpFound -> BACKUP_FIELD_NUMBER
-                f"{simple_class_name.replace('Otp', '').upper()}_FIELD_NUMBER",       # ExpectingOtp -> EXPECTING_FIELD_NUMBER
-                # 使用完整类名（备选方案）
-                f"{class_name.upper()}_FIELD_NUMBER",
-                f"{self._to_snake_case(class_name).upper()}_FIELD_NUMBER", 
-                f"{class_name.upper()}",
-                f"{simple_class_name.upper()}",
-                f"{simple_class_name.upper()}_NUMBER",
-                # 处理缩写情况
-                f"{simple_class_name.upper()[:4]}_FIELD_NUMBER",  # 前4个字符
-                f"{simple_class_name.upper()[:5]}_FIELD_NUMBER",  # 前5个字符
-                f"{simple_class_name.upper()[:6]}_FIELD_NUMBER",  # 前6个字符
-                # 特殊映射（基于实际观察到的模式）
-                "ERROR_FIELD_NUMBER" if simple_class_name.endswith('Error') else None,
-                "BACKUPFOUND_FIELD_NUMBER" if 'BackUp' in simple_class_name else None,
-                "ATTESTATIONREQUIRED_FIELD_NUMBER" if 'Attestation' in simple_class_name else None,
-                "EXPECTINGOTP_FIELD_NUMBER" if 'Expecting' in simple_class_name else None,
-            ]
+            # 2. 其次查找：内部类（在同级内部类中查找）
+            tag = self._find_tag_in_sibling_classes(class_name)
+            if tag is not None:
+                self.logger.debug(f"    🎯 内部类字段标签: {class_name} = {tag}")
+                return tag
             
-            # 过滤掉None值
-            possible_constant_names = [name for name in possible_constant_names if name is not None]
+            # 3. 再次查找：匿名类（在匿名类中查找）
+            tag = self._find_tag_in_anonymous_classes(class_name)
+            if tag is not None:
+                self.logger.debug(f"    🎯 匿名类字段标签: {class_name} = {tag}")
+                return tag
             
-            for constant_name in possible_constant_names:
-                # 尝试从Java源码中提取常量值
-                tag = self.java_source_analyzer._extract_constant_value(constant_name)
-                if tag is not None:
-                    self.logger.debug(f"    🎯 从源码获取字段标签: {class_name} -> {constant_name} = {tag}")
-                    return tag
+            # 4. 最后查找：主类（在包含类的主类中查找，包括oneof选项）
+            tag = self._find_tag_in_main_class(class_name)
+            if tag is not None:
+                self.logger.debug(f"    🎯 主类字段标签: {class_name} = {tag}")
+                return tag
             
+            # 5. 找不到就返回None，调用方会报错
             return None
             
         except Exception as e:
-            self.logger.debug(f"    ⚠️  源码分析失败: {e}")
+            self.logger.debug(f"    ⚠️  从源码获取字段标签失败: {class_name} - {e}")
             return None
+    
+    def _find_tag_in_independent_class(self, class_name: str) -> Optional[int]:
+        """1. 在独立类中查找字段标签（类本身就是一个独立类）"""
+        # 如果class_name不包含$，说明可能是独立类
+        if '$' not in class_name:
+            return self._search_constant_in_class(class_name, class_name)
+        return None
+    
+    def _find_tag_in_sibling_classes(self, class_name: str) -> Optional[int]:
+        """2. 在同级内部类中查找字段标签"""
+        # 如果class_name包含$，尝试在同级内部类中查找
+        if '$' in class_name:
+            # 例如：Models$Onboarded -> 在Models的其他内部类中查找ONBOARDED_FIELD_NUMBER
+            current_class = getattr(self, '_current_processing_class', None)
+            if current_class and '$' in current_class:
+                return self._search_constant_in_class(class_name, current_class)
+        return None
+    
+    def _find_tag_in_anonymous_classes(self, class_name: str) -> Optional[int]:
+        """3. 在匿名类中查找字段标签"""
+        # 这里可以扩展匿名类查找逻辑
+        # 目前先返回None，后续可以根据需要扩展
+        return None
+    
+    def _find_tag_in_main_class(self, class_name: str) -> Optional[int]:
+        """4. 在主类中查找字段标签（包括oneof选项）"""
+        current_class = getattr(self, '_current_processing_class', None)
+        if current_class:
+            # 先尝试常规字段标签查找
+            tag = self._search_constant_in_class(class_name, current_class)
+            if tag is not None:
+                return tag
+            
+            # 再尝试oneof选项查找
+            tag = self._search_oneof_option_tag(class_name, current_class)
+            if tag is not None:
+                return tag
+        
+        return None
+    
+    def _search_constant_in_class(self, class_name: str, search_class: str) -> Optional[int]:
+        """在指定类中搜索字段标签常量"""
+        # 处理内部类名称：Models$Onboarded -> Onboarded
+        simple_class_name = class_name
+        if '$' in class_name:
+            simple_class_name = class_name.split('$')[-1]  # 取最后一部分
+        
+        # 生成可能的常量名
+        possible_constant_names = [
+            # 使用简化的类名（最重要的模式）
+            f"{simple_class_name.upper()}_FIELD_NUMBER",
+            f"{self._to_snake_case(simple_class_name).upper()}_FIELD_NUMBER",
+            # 对于特殊命名，去掉常见后缀
+            f"{simple_class_name.replace('Required', '').upper()}_FIELD_NUMBER",  # AttestationRequired -> ATTESTATION_FIELD_NUMBER
+            f"{simple_class_name.replace('Error', '').upper()}_FIELD_NUMBER",     # HandledError -> HANDLED_FIELD_NUMBER
+            f"{simple_class_name.replace('Found', '').upper()}_FIELD_NUMBER",     # BackUpFound -> BACKUP_FIELD_NUMBER
+            f"{simple_class_name.replace('Otp', '').upper()}_FIELD_NUMBER",       # ExpectingOtp -> EXPECTING_FIELD_NUMBER
+            # 使用完整类名（备选方案）
+            f"{class_name.upper()}_FIELD_NUMBER",
+            f"{self._to_snake_case(class_name).upper()}_FIELD_NUMBER", 
+            f"{class_name.upper()}",
+            f"{simple_class_name.upper()}",
+            f"{simple_class_name.upper()}_NUMBER",
+            # 处理缩写情况
+            f"{simple_class_name.upper()[:4]}_FIELD_NUMBER",  # 前4个字符
+            f"{simple_class_name.upper()[:5]}_FIELD_NUMBER",  # 前5个字符
+            f"{simple_class_name.upper()[:6]}_FIELD_NUMBER",  # 前6个字符
+            # 特殊映射（基于实际观察到的模式）
+            "ERROR_FIELD_NUMBER" if simple_class_name.endswith('Error') else None,
+            "BACKUPFOUND_FIELD_NUMBER" if 'BackUp' in simple_class_name else None,
+            "ATTESTATIONREQUIRED_FIELD_NUMBER" if 'Attestation' in simple_class_name else None,
+            "EXPECTINGOTP_FIELD_NUMBER" if 'Expecting' in simple_class_name else None,
+        ]
+        
+        # 过滤掉None值
+        possible_constant_names = [name for name in possible_constant_names if name is not None]
+        
+        for constant_name in possible_constant_names:
+            # 尝试从Java源码中提取常量值
+            tag = self.java_source_analyzer._extract_constant_value(constant_name)
+            if tag is not None:
+                return tag
+        
+        return None
+    
+    def _search_oneof_option_tag(self, class_name: str, search_class: str) -> Optional[int]:
+        """在主类中查找oneof选项的字段标签"""
+        # oneof选项的字段标签定义在包含oneof的主类中
+        # 例如：ExpectingSms -> SMS_FIELD_NUMBER
+        
+        possible_constant_names = []
+        
+        # 处理 ExpectingXxx -> XXX_FIELD_NUMBER 的模式
+        if class_name.startswith('Expecting'):
+            base_name = class_name[9:]  # 移除 "Expecting" 前缀
+            possible_constant_names.extend([
+                f"{base_name.upper()}_FIELD_NUMBER",
+                f"{self._to_snake_case(base_name).upper()}_FIELD_NUMBER",
+                base_name.upper(),
+            ])
+        
+        # 也尝试直接使用类名
+        possible_constant_names.extend([
+            f"{class_name.upper()}_FIELD_NUMBER",
+            f"{self._to_snake_case(class_name).upper()}_FIELD_NUMBER",
+        ])
+        
+        # 在指定类中查找
+        for constant_name in possible_constant_names:
+            tag = self.java_source_analyzer._extract_constant_value(constant_name)
+            if tag is not None:
+                return tag
+        
+        return None
     
     def _to_snake_case(self, camel_str: str) -> str:
         """
@@ -760,7 +866,7 @@ class InfoDecoder:
         推断依赖类的完整类名，特别处理内部类情况
         
         Args:
-            class_name: 简单类名（如Models$Onboarded）
+            class_name: 简单类名（如Models$Onboarded或ExpectingSms）
             
         Returns:
             完整的类名
@@ -772,7 +878,7 @@ class InfoDecoder:
         # 获取当前处理的类
         current_class = getattr(self, '_current_processing_class', None)
         if not current_class:
-            self.logger.warning(f"    ⚠️  无法获取当前处理类，无法推断 {class_name} 的完整类名")
+            self.logger.error(f"    ⚠️  无法获取当前处理类，无法推断 {class_name} 的完整类名")
             return class_name
         
         # 动态提取当前类的包名
@@ -780,13 +886,48 @@ class InfoDecoder:
             last_dot = current_class.rfind('.')
             package_name = current_class[:last_dot]
         else:
-            self.logger.warning(f"    ⚠️  当前类 {current_class} 没有包名，无法推断依赖类包名")
+            self.logger.error(f"    ⚠️  当前类 {current_class} 没有包名，无法推断依赖类包名")
             return class_name
         
-        # 直接使用包名+类名，不继承当前类的内部类结构
+        # 判断是否为oneof选项内部类
+        if self._is_oneof_option_class(class_name, current_class):
+            # 对于oneof选项，它们是当前类的内部类
+            full_class_name = f"{current_class}${class_name}"
+            self.logger.debug(f"    🔍 推断oneof内部类: {class_name} -> {full_class_name}")
+            return full_class_name
+        
+        # 对于其他类，使用包名+类名
         full_class_name = f"{package_name}.{class_name}"
         self.logger.debug(f"    🔍 推断依赖类: {class_name} -> {full_class_name}")
         return full_class_name
+    
+    def _is_oneof_option_class(self, class_name: str, current_class: str) -> bool:
+        """
+        判断是否为oneof选项类（即当前类的内部类）
+        
+        通用规则：
+        1. 如果class_name已经包含$，说明它是独立的类，不是当前类的内部类
+        2. 如果class_name不包含$，且当前类包含$，很可能是当前类的内部类
+        
+        Args:
+            class_name: 简单类名
+            current_class: 当前处理的类
+            
+        Returns:
+            是否为oneof选项类
+        """
+        # 如果class_name已经包含$，说明它是独立的类（如Models$Onboarded），
+        # 不是当前类的内部类
+        if '$' in class_name:
+            return False
+        
+        # 如果class_name不包含$，且当前类包含$，很可能是当前类的内部类
+        # 例如：在Models$ExpectingOtp中遇到ExpectingSms，应该推断为内部类
+        if '$' in current_class:
+            return True
+        
+        # 如果当前类也不包含$，默认认为是独立类
+        return False
     
     def get_discovered_dependencies(self) -> List[str]:
         """
@@ -887,7 +1028,7 @@ class InfoDecoder:
                 self.unknown_types_stats[field_type_byte] = self.unknown_types_stats.get(field_type_byte, 0) + 1
                 
                 # 记录未知类型，但不跳过字段
-                self.logger.warning(f"    ⚠️  发现未知字节码类型: {field_type_byte} (0x{field_type_byte:02x})")
+                self.logger.error(f"    ⚠️  发现未知字节码类型: {field_type_byte} (0x{field_type_byte:02x})")
                 field_type = self._analyze_unknown_type_with_source_priority(field_type_byte, objects, object_index)
                 self.logger.info(f"    🔍 推断未知类型: {field_type_byte} -> {field_type}")
             else:
@@ -897,7 +1038,7 @@ class InfoDecoder:
             # 从对象数组获取字段信息
             field_info = self._extract_field_info(objects, object_index, field_type)
             if not field_info:
-                self.logger.warning(f"    ⚠️  无法获取字段信息，跳过字段 tag={field_tag}")
+                self.logger.error(f"    ⚠️  无法获取字段信息，跳过字段 tag={field_tag}")
                 continue
                 
             field_name, field_type_name, new_object_index = field_info
@@ -1354,7 +1495,7 @@ class InfoDecoder:
             return self._infer_map_type_from_source(field_name_raw)
             
         except Exception as e:
-            self.logger.warning(f"    ⚠️  从MapEntry提取类型失败: {e}")
+            self.logger.error(f"    ⚠️  从MapEntry提取类型失败: {e}")
             return self._infer_map_type_from_source(field_name_raw)
     
     def _infer_map_type_from_source(self, field_name_raw: str) -> str:
@@ -1486,7 +1627,7 @@ class InfoDecoder:
             return 'float'  # 默认为float
         else:
             # 其他未知wire type
-            self.logger.warning(f"    ⚠️  未知wire type: {wire_type}")
+            self.logger.error(f"    ⚠️  未知wire type: {wire_type}")
             return self._fallback_type_inference(objects, object_index)
     
     def _cross_validate_types(self, java_type: Optional[str], bytecode_type: str, wire_type: int, field_type_byte: int) -> str:

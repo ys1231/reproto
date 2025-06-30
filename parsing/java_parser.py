@@ -651,7 +651,16 @@ class JavaParser:
                     self.logger.debug(f"  🎯 使用缓存的字段标签: {java_file_path}")
                     return self._field_tags_cache[cache_key]
             
-            # 检查文件是否存在（虚拟文件路径不存在）
+            # 检查是否为内部类的虚拟文件路径
+            # 内部类文件名模式：Package$MainClass$InnerClass.java
+            file_name = java_file_path.name
+            if file_name.count('$') >= 2:
+                # 这是内部类的虚拟文件路径，如果缓存中没有，直接返回None
+                # 因为内部类的字段标签应该已经在解析主文件时缓存了
+                self.logger.debug(f"  📁 内部类虚拟文件路径，缓存中未找到字段标签: {java_file_path}")
+                return None
+            
+            # 检查实际文件是否存在
             if not java_file_path.exists():
                 self.logger.debug(f"  📁 文件不存在，跳过字段标签提取: {java_file_path}")
                 return None
