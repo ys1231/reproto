@@ -777,17 +777,16 @@ class ProtoReconstructor:
         Returns:
             是否为枚举类型
         """
-        # 检查是否为当前消息的内部枚举（优先级最高）
-        if hasattr(self, '_current_processing_class') and self._current_processing_class:
-            current_message_def = self.message_definitions.get(self._current_processing_class)
-            if current_message_def and hasattr(current_message_def, 'inner_enums'):
-                for inner_enum in current_message_def.inner_enums:
-                    if inner_enum.name == type_name:
-                        return True
-            
         # 对于Google内置类型，直接返回False
         if type_name.startswith('google.protobuf.'):
             return False
+            
+        # 检查是否为任何已处理消息的内部枚举
+        for message_def in self.message_definitions.values():
+            if hasattr(message_def, 'inner_enums'):
+                for inner_enum in message_def.inner_enums:
+                    if inner_enum.name == type_name:
+                        return True
         
         # 检查是否以Enum开头（混淆后的枚举名）
         if type_name.startswith('Enum'):
@@ -804,8 +803,16 @@ class ProtoReconstructor:
             type_name: 枚举类型名
         """
         try:
-            self.logger.info(f"    🔍 搜索枚举文件: {type_name}")
-            # 尝试在所有包中查找这个枚举类
+            # 首先检查是否为内部枚举（已经在消息处理过程中提取）
+            for message_def in self.message_definitions.values():
+                if hasattr(message_def, 'inner_enums'):
+                    for inner_enum in message_def.inner_enums:
+                        if inner_enum.name == type_name:
+                            self.logger.info(f"    ✅ 发现内部枚举: {type_name} (已在消息 {message_def.name} 中处理)")
+                            return
+            
+            # 如果不是内部枚举，则搜索独立的枚举文件
+            self.logger.info(f"    🔍 搜索独立枚举文件: {type_name}")
             enum_file_path = self._find_enum_file(type_name)
             if enum_file_path:
                 self.logger.info(f"    ✅ 找到枚举文件: {enum_file_path}")
@@ -831,7 +838,7 @@ class ProtoReconstructor:
                 else:
                     self.logger.error(f"    ❌ 枚举值解析失败: {enum_file_path}")
             else:
-                self.logger.error(f"    ❌ 未找到枚举文件: {type_name}")
+                self.logger.warning(f"    ⚠️ 未找到独立枚举文件: {type_name} (可能是内部枚举)")
                     
         except Exception as e:
             self.logger.error(f"  ❌ 处理枚举依赖失败 {type_name}: {e}")
