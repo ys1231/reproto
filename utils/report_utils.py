@@ -53,8 +53,22 @@ def print_results_summary(reconstructor: 'ProtoReconstructor', results: Dict[str
     # 统计消息和枚举数量
     message_count = sum(1 for r in results.values() if hasattr(r, 'fields'))
     enum_count = sum(1 for r in results.values() if hasattr(r, 'values'))
+
+    # 统计内部枚举数量
+    inner_enum_count = 0
+    for r in results.values():
+        if hasattr(r, 'inner_enums') and r.inner_enums:
+            inner_enum_count += len(r.inner_enums)
+
+    # 总枚举数量 = 独立枚举 + 内部枚举
+    total_enum_count = enum_count + inner_enum_count
+
+    logger.info(f"   - ✅ 成功: {success_count} 个 (消息: {message_count}, 枚举: {total_enum_count})")
     
-    logger.info(f"   - ✅ 成功: {success_count} 个 (消息: {message_count}, 枚举: {enum_count})")
+    # 如果有内部枚举，显示详细统计
+    if inner_enum_count > 0:
+        logger.info(f"     • 独立枚举: {enum_count} 个")
+        logger.info(f"     • 内部枚举: {inner_enum_count} 个")
     
     # 显示失败的类
     if hasattr(reconstructor, 'failed_classes') and reconstructor.failed_classes:
