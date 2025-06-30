@@ -107,6 +107,7 @@ class MessageDefinition:
     full_name: str                                  # 完整类名（包名.消息名）
     fields: List[FieldDefinition] = field(default_factory=list)      # 常规字段列表
     oneofs: List[OneofDefinition] = field(default_factory=list)      # oneof字段组列表
+    inner_enums: List[EnumDefinition] = field(default_factory=list)  # 内部枚举列表
     
     # 原始数据（用于调试和追溯）
     info_string: Optional[str] = None               # 原始字节码字符串

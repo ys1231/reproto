@@ -443,20 +443,64 @@ class JavaParser:
     
     def _is_protobuf_enum(self, content: str) -> bool:
         """
-        判断是否是Protobuf枚举类
+        判断是否是Protobuf枚举类 - 增强版，正确区分消息类和枚举类
         
         Args:
             content: Java文件内容
             
         Returns:
-            是否为Protobuf枚举
+            是否为Protobuf枚举（整个文件的主类是枚举，而不是包含内部枚举的消息类）
         """
-        # 检查关键特征
-        return (
+        # 首先检查是否为消息类：如果包含 'extends GeneratedMessageLite'，则这是消息类
+        if 'extends GeneratedMessageLite' in content:
+            self.logger.debug("  🔍 检测到GeneratedMessageLite，这是消息类，不是枚举")
+            return False
+        
+        # 然后检查是否为枚举类：查找主类的定义
+        # 查找文件开头的主类定义（跳过注释）
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            
+            # 跳过注释行和空行
+            if not line or line.startswith('//') or line.startswith('/*') or line.startswith('*'):
+                continue
+            
+            # 跳过package和import语句
+            if line.startswith('package ') or line.startswith('import '):
+                continue
+            
+            # 查找类定义行
+            if 'class ' in line or 'enum ' in line or 'interface ' in line:
+                # 检查是否为枚举类定义
+                if ('public enum ' in line or 'enum ' in line) and 'implements Internal.EnumLite' in line:
+                    self.logger.debug(f"  ✅ 检测到主类为枚举: {line}")
+                    return True
+                # 如果是类定义但不是枚举，则返回False
+                elif 'class ' in line:
+                    self.logger.debug(f"  🔍 检测到主类为普通类: {line}")
+                    return False
+        
+        # 如果没有找到明确的类定义，使用原有的简单检查作为后备
+        # 但要确保这确实是一个枚举文件，而不是包含内部枚举的消息类
+        has_enum_features = (
             'implements Internal.EnumLite' in content and
             'enum ' in content and
             ('forNumber(' in content or 'getNumber()' in content)
         )
+        
+        if has_enum_features:
+            # 进一步检查：如果同时包含消息类的特征，则不是枚举
+            if ('GeneratedMessageLite' in content or 
+                'newMessageInfo(' in content or
+                'FIELD_NUMBER' in content):
+                self.logger.debug("  🔍 虽然包含枚举特征，但也包含消息类特征，判断为消息类")
+                return False
+            else:
+                self.logger.debug("  ✅ 包含枚举特征且无消息类特征，判断为枚举类")
+                return True
+        
+        return False
     
     def _extract_enum_values(self, content: str) -> List[tuple]:
         """

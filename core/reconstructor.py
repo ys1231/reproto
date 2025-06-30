@@ -575,8 +575,69 @@ class ProtoReconstructor:
                 self.failed_classes[class_name] = error_msg
                 self.logger.error(f"  ❌ {error_msg}: {class_name}")
                 return
+
+            # 🔄 修复：优先检查是否为消息类，避免包含内部枚举的消息类被误识别为枚举
+            # 2. 首先检查是否为消息类（通过检查是否继承GeneratedMessageLite）
+            content = java_file_path.read_text(encoding='utf-8')
+            is_message_class = 'extends GeneratedMessageLite' in content
             
-            # 2. 尝试解析为枚举
+            if is_message_class:
+                # 这是消息类，直接解析为消息
+                self.logger.info(f"  🔍 检测到消息类（继承GeneratedMessageLite）")
+                
+                # 特殊处理：如果是内部类且找到的是外部类文件，需要从外部类中提取内部类信息
+                if '$' in class_name and java_file_path.stem != class_name.split('.')[-1]:
+                    # 这是内部类，但找到的是外部类文件
+                    inner_class_name = class_name.split('$')[-1]  # 获取内部类名
+                    info_string, objects_array = self.java_parser.parse_inner_class_from_file(
+                        java_file_path, inner_class_name
+                    )
+                    # 为内部类创建虚拟的Java文件路径，用于字段标签提取
+                    virtual_java_file_path = java_file_path.parent / f"{java_file_path.stem}${inner_class_name}.java"
+                else:
+                    # 普通类或独立的内部类文件
+                    info_string, objects_array = self.java_parser.parse_java_file(java_file_path)
+                    virtual_java_file_path = java_file_path
+
+                if not info_string:
+                    error_msg = "无法从Java文件中提取protobuf信息"
+                    self.failed_classes[class_name] = error_msg
+                    self.logger.error(f"  ❌ {error_msg}: {class_name}")
+                    return
+
+                # 解码字节码为消息定义
+                message_def = self.info_decoder.decode_message_info(
+                    class_name, info_string, objects_array, virtual_java_file_path
+                )
+
+                if message_def:
+                    self.message_definitions[class_name] = message_def
+                    self.logger.info(f"  ✅ 成功解析消息: {len(message_def.fields)} 个字段")
+                    
+                    # 处理内部枚举
+                    if hasattr(message_def, 'inner_enums') and message_def.inner_enums:
+                        self.logger.info(f"  📝 包含 {len(message_def.inner_enums)} 个内部枚举")
+                    
+                    # 发现并添加依赖类到队列
+                    self._discover_dependencies(message_def)
+                    
+                    # 处理InfoDecoder发现的依赖类（如oneof中的类引用）
+                    discovered_deps = self.info_decoder.get_discovered_dependencies()
+                    for dep_class in discovered_deps:
+                        if dep_class not in self.processed_classes and dep_class not in self.pending_classes:
+                            self.pending_classes.append(dep_class)
+                            self.logger.info(f"  🔗 发现oneof依赖: {dep_class}")
+                    
+                    # 清理InfoDecoder的依赖记录，为下次解析做准备
+                    self.info_decoder.discovered_dependencies = []
+                else:
+                    error_msg = "字节码解码失败，可能不是protobuf消息类"
+                    self.failed_classes[class_name] = error_msg
+                    self.logger.error(f"  ❌ {error_msg}: {class_name}")
+                
+                return  # 消息类处理完成，直接返回
+            
+            # 3. 如果不是消息类，尝试解析为枚举
             enum_values = self.java_parser.parse_enum_file(java_file_path)
             if enum_values:
                 # 这是一个枚举类
@@ -584,53 +645,11 @@ class ProtoReconstructor:
                 self.enum_definitions[class_name] = enum_def
                 self.logger.info(f"  ✅ 成功解析枚举: {len(enum_def.values)} 个值")
                 return
-            
-            # 3. 尝试解析为消息类
-            # 特殊处理：如果是内部类且找到的是外部类文件，需要从外部类中提取内部类信息
-            if '$' in class_name and java_file_path.stem != class_name.split('.')[-1]:
-                # 这是内部类，但找到的是外部类文件
-                inner_class_name = class_name.split('$')[-1]  # 获取内部类名
-                info_string, objects_array = self.java_parser.parse_inner_class_from_file(
-                    java_file_path, inner_class_name
-                )
-                # 为内部类创建虚拟的Java文件路径，用于字段标签提取
-                virtual_java_file_path = java_file_path.parent / f"{java_file_path.stem}${inner_class_name}.java"
-            else:
-                # 普通类或独立的内部类文件
-                info_string, objects_array = self.java_parser.parse_java_file(java_file_path)
-                virtual_java_file_path = java_file_path
-            
-            if not info_string:
-                error_msg = "无法从Java文件中提取protobuf信息"
-                self.failed_classes[class_name] = error_msg
-                self.logger.error(f"  ❌ {error_msg}: {class_name}")
-                return
-            
-            # 4. 解码字节码为消息定义
-            message_def = self.info_decoder.decode_message_info(
-                class_name, info_string, objects_array, virtual_java_file_path
-            )
-            
-            if message_def:
-                self.message_definitions[class_name] = message_def
-                self.logger.info(f"  ✅ 成功解析消息: {len(message_def.fields)} 个字段")
-                
-                # 5. 发现并添加依赖类到队列
-                self._discover_dependencies(message_def)
-                
-                # 6. 处理InfoDecoder发现的依赖类（如oneof中的类引用）
-                discovered_deps = self.info_decoder.get_discovered_dependencies()
-                for dep_class in discovered_deps:
-                    if dep_class not in self.processed_classes and dep_class not in self.pending_classes:
-                        self.pending_classes.append(dep_class)
-                        self.logger.info(f"  🔗 发现oneof依赖: {dep_class}")
-                
-                # 清理InfoDecoder的依赖记录，为下次解析做准备
-                self.info_decoder.discovered_dependencies = []
-            else:
-                error_msg = "字节码解码失败，可能不是protobuf消息类"
-                self.failed_classes[class_name] = error_msg
-                self.logger.error(f"  ❌ {error_msg}: {class_name}")
+
+            # 4. 如果既不是消息类也不是枚举类，报错
+            error_msg = "既不是protobuf消息类也不是枚举类"
+            self.failed_classes[class_name] = error_msg
+            self.logger.error(f"  ❌ {error_msg}: {class_name}")
                 
         except Exception as e:
             error_msg = f"处理异常: {str(e)}"
@@ -758,12 +777,23 @@ class ProtoReconstructor:
         Returns:
             是否为枚举类型
         """
+        # 检查是否为当前消息的内部枚举（优先级最高）
+        if hasattr(self, '_current_processing_class') and self._current_processing_class:
+            current_message_def = self.message_definitions.get(self._current_processing_class)
+            if current_message_def and hasattr(current_message_def, 'inner_enums'):
+                for inner_enum in current_message_def.inner_enums:
+                    if inner_enum.name == type_name:
+                        return True
+            
+        # 对于Google内置类型，直接返回False
+        if type_name.startswith('google.protobuf.'):
+            return False
+        
         # 检查是否以Enum开头（混淆后的枚举名）
         if type_name.startswith('Enum'):
             return True
         
-        # 检查是否在已知的枚举类型列表中
-        # 这里可以添加更多的枚举类型判断逻辑
+        # 默认返回False
         return False
     
     def _process_enum_dependency(self, type_name: str) -> None:

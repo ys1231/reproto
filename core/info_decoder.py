@@ -119,6 +119,13 @@ class InfoDecoder:
             # 解析字段信息
             self._parse_fields(message_def, bytes_data, objects, field_tags)
             
+            # 🆕 新增：提取内部枚举
+            if java_file_path and java_file_path.exists():
+                inner_enums = self._extract_inner_enums(java_file_path, class_name)
+                if inner_enums:
+                    message_def.inner_enums = inner_enums
+                    self.logger.info(f"    🔢 提取到 {len(inner_enums)} 个内部枚举")
+            
             return message_def
             
         except Exception as e:
@@ -1638,36 +1645,101 @@ class InfoDecoder:
 
     def _parse_generic_types(self, type_params: str) -> List[str]:
         """
-        解析泛型类型参数
+        解析泛型类型参数，处理嵌套的尖括号
         
         Args:
-            type_params: 泛型参数字符串，如 "String, Contact" 或 "Map<String, Object>, List<Item>"
+            type_params: 泛型参数字符串，如 "String, Contact" 或 "String, List<Contact>"
             
         Returns:
-            解析后的类型列表
+            类型列表
         """
-        if not type_params:
-            return []
-        
-        result = []
-        current = ""
+        types = []
         bracket_count = 0
+        current_type = ""
         
         for char in type_params:
             if char == '<':
                 bracket_count += 1
-                current += char
+                current_type += char
             elif char == '>':
                 bracket_count -= 1
-                current += char
+                current_type += char
             elif char == ',' and bracket_count == 0:
-                # 只有在最外层的逗号才作为分隔符
-                result.append(current.strip())
-                current = ""
+                # 找到分隔符
+                if current_type.strip():
+                    types.append(current_type.strip())
+                current_type = ""
             else:
-                current += char
+                current_type += char
         
-        if current.strip():
-            result.append(current.strip())
+        # 添加最后一个类型
+        if current_type.strip():
+            types.append(current_type.strip())
         
-        return result 
+        return types
+    
+    def _extract_inner_enums(self, java_file_path, class_name: str) -> List:
+        """
+        从Java文件中提取内部枚举定义 - 复用现有的枚举解析器
+        
+        Args:
+            java_file_path: Java文件路径
+            class_name: 主类名
+            
+        Returns:
+            内部枚举定义列表
+        """
+        try:
+            # 导入EnumDefinition
+            from models.message_definition import EnumDefinition
+            
+            content = java_file_path.read_text(encoding='utf-8')
+            inner_enums = []
+            
+            # 查找所有内部枚举定义
+            import re
+            enum_pattern = r'public\s+enum\s+(\w+)\s+implements\s+Internal\.EnumLite\s*\{'
+            enum_matches = re.finditer(enum_pattern, content)
+            
+            for match in enum_matches:
+                enum_name = match.group(1)
+                enum_start = match.end()
+                
+                # 找到枚举定义的结束位置
+                brace_count = 1
+                pos = enum_start
+                while pos < len(content) and brace_count > 0:
+                    if content[pos] == '{':
+                        brace_count += 1
+                    elif content[pos] == '}':
+                        brace_count -= 1
+                    pos += 1
+                
+                if brace_count == 0:
+                    # 提取枚举内容
+                    enum_content = content[enum_start:pos-1]
+                    
+                    # 🔄 复用JavaParser的现有函数来提取枚举值
+                    enum_values_tuples = self.java_parser._extract_enum_values(enum_content)
+                    
+                    if enum_values_tuples:
+                        # 创建枚举定义
+                        enum_def = EnumDefinition(
+                            name=enum_name,
+                            package_name='.'.join(class_name.split('.')[:-1]),
+                            full_name=f"{class_name}${enum_name}"
+                        )
+                        
+                        # 🔄 复用现有的EnumValueDefinition创建逻辑
+                        from models.message_definition import EnumValueDefinition
+                        for name, value in enum_values_tuples:
+                            enum_def.values.append(EnumValueDefinition(name=name, value=value))
+                        
+                        inner_enums.append(enum_def)
+                        self.logger.info(f"    📝 提取内部枚举: {enum_name} ({len(enum_def.values)} 个值)")
+            
+            return inner_enums
+            
+        except Exception as e:
+            self.logger.error(f"❌ 提取内部枚举失败: {e}")
+            return []

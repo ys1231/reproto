@@ -311,9 +311,16 @@ class NamingConverter:
         if not name:
             return name
             
-        # 将$替换为空字符串，这样Models$Device变成ModelsDevice
-        # 这符合proto命名规范，避免语法错误
-        return name.replace('$', '')
+        # 修复：正确处理内部类的$符号
+        # 不能简单删除$，这会导致Models$Device和Models$Push等内部类
+        # 与其内部枚举混淆，应该转换为更明确的命名
+        if '$' in name:
+            # 将$替换为下划线，保持类型区分
+            # Models$Device -> Models_Device
+            # Models$Push -> Models_Push
+            return name.replace('$', '_')
+        
+        return name
 
 
 class FieldNameProcessor:

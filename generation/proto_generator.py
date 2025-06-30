@@ -220,6 +220,15 @@ class ProtoGenerator:
         
         lines.append(f'message {clean_name} {{')
         
+        # 🔄 复用现有的枚举生成逻辑：先生成内部枚举
+        if hasattr(message_def, 'inner_enums') and message_def.inner_enums:
+            for inner_enum in message_def.inner_enums:
+                # 为内部枚举添加缩进
+                enum_lines = self._generate_enum_definition(inner_enum)
+                for line in enum_lines:
+                    lines.append('  ' + line)  # 添加2个空格缩进
+                lines.append('')  # 枚举后添加空行
+        
         # 生成oneof字段（oneof字段内部也按tag排序）
         for oneof in message_def.oneofs:
             lines.extend(self._generate_oneof_definition(oneof, all_enums))
@@ -331,14 +340,14 @@ class ProtoGenerator:
         
         # 检查常规字段依赖
         for field in message_def.fields:
-            import_path = self._get_field_import_path(field, message_def.package_name, all_messages, all_enums)
+            import_path = self._get_field_import_path(field, message_def.package_name, all_messages, all_enums, message_def)
             if import_path:
                 imports.add(import_path)
         
         # 检查oneof字段依赖
         for oneof in message_def.oneofs:
             for field in oneof.fields:
-                import_path = self._get_field_import_path(field, message_def.package_name, all_messages, all_enums)
+                import_path = self._get_field_import_path(field, message_def.package_name, all_messages, all_enums, message_def)
                 if import_path:
                     imports.add(import_path)
         
@@ -346,7 +355,8 @@ class ProtoGenerator:
     
     def _get_field_import_path(self, field: FieldDefinition, current_package: str, 
                               all_messages: Dict[str, MessageDefinition],
-                              all_enums: Dict[str, EnumDefinition] = None) -> str:
+                              all_enums: Dict[str, EnumDefinition] = None,
+                              current_message: MessageDefinition = None) -> str:
         """
         根据字段获取导入路径
         
@@ -380,7 +390,13 @@ class ProtoGenerator:
         if field.type_name in generic_types:
             return None
         
-        # 检查是否为枚举类型
+        # 🔧 优先检查是否为当前消息的内部枚举，如果是则不需要import
+        if current_message and hasattr(current_message, 'inner_enums'):
+            for inner_enum in current_message.inner_enums:
+                if inner_enum.name == field.type_name:
+                    return None  # 内部枚举不需要import
+        
+        # 检查是否为外部枚举类型
         if all_enums:
             for enum_full_name, enum_def in all_enums.items():
                 enum_class_name = enum_full_name.split('.')[-1]
