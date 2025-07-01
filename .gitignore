@@ -142,5 +142,4 @@ poetry.lock
 uv.lock
 
 /out_*
-/init.md
 /logs

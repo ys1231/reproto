@@ -1,5 +1,15 @@
 # 项目开发约定
 
+## 目录说明
+- java源码目录: ../sources
+- 输出目录: ../out_proto
+
+## 测试java类
+- 'com.truecaller.accountonboarding.v1.Service$SendOnboardingOtpRequest' 测试成功
+- 'com.truecaller.accountonboarding.v1.Service$SendOnboardingOtpResponse' 测试成功
+- 'com.truecaller.accountonboarding.v1.Service$VerifyOnboardingOtpRequest' 测试成功
+- 'com.truecaller.accountonboarding.v1.Service$VerifyOnboardingOtpResponse' 测试失败
+
 ## 沟通约定
 - **语言**: 始终使用中文进行沟通和交流
 - **问题反馈**: 提供详细的日志文件和错误信息便于分析
@@ -35,7 +45,6 @@
 3. **最小修改**: 用最小的代码修改解决最大的问题
 4. **全面测试**: 修复后验证相关功能正常工作
 5. **文档更新**: 重要修复需要更新相关文档
-
 
 ## 项目结构约定
 - **模块化**: 保持清晰的模块分离（解析、生成、核心、工具）
