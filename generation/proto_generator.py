@@ -439,7 +439,7 @@ class ProtoGenerator:
         except (ImportError, ValueError) as e:
             # 如果内置管理器不可用，记录错误但继续处理
             logger = get_logger("proto_generator")
-            logger.warning(f"内置proto管理器不可用: {e}")
+            logger.error(f"❌ 内置proto管理器不可用: {e} - 这将导致Google protobuf内置类型无法处理！")
         
         return None
     

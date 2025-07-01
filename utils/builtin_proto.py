@@ -197,7 +197,7 @@ class BuiltinProtoManager:
             # 源文件路径
             source_file = self.include_dir / proto_file
             if not source_file.exists():
-                logger.warning(f"内置proto文件不存在: {source_file}")
+                logger.error(f"❌ 内置proto文件不存在: {source_file} - 这将导致Google protobuf内置类型无法使用！")
                 continue
             
             # 目标文件路径

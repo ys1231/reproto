@@ -133,7 +133,7 @@ class TypeMatchingIndex:
                 self._package_index[package_name].append(full_class_name)
                 
         except Exception as e:
-            self.logger.warning(f"⚠️  索引文件失败 {java_file}: {e}")
+            self.logger.error(f"❌ 索引文件失败 {java_file}: {e} - 这将影响类型查找的准确性！")
     
     def find_best_match(self, type_name: str, current_package: str = "") -> Optional[str]:
         """

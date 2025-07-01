@@ -296,11 +296,20 @@ class InfoDecoder:
                             field_type_name = self._convert_java_to_proto_type(enum_type)
                             rule = 'repeated'
                         else:
-                            field_type_name = 'int32'
-                            rule = 'repeated'
+                            # 🆕 新增：如果setter方法识别失败，尝试通过转换器识别枚举类型
+                            enum_type = self.java_source_analyzer._get_enum_type_from_converter(field_name_raw.rstrip('_'))
+                            if enum_type:
+                                field_type_name = self._convert_java_to_proto_type(enum_type)
+                                rule = 'repeated'
+                                self.logger.info(f"    🎯 通过转换器识别出枚举类型: {field_name_raw} -> {enum_type}")
+                            else:
+                                field_type_name = 'int32'
+                                rule = 'repeated'
+                                self.logger.error(f"    ❌ 无法识别枚举类型，错误回退到int32: {field_name_raw} - 这将导致proto类型错误！")
                     else:
                         field_type_name = 'int32'
                         rule = 'repeated'
+                        self.logger.error(f"    ❌ 缺少Java源码分析器，无法识别Internal.IntList的真实枚举类型: {field_name_raw} - 错误回退到int32！")
                 else:
                     # 普通Java类型
                     if java_type in ['int', 'long', 'short', 'byte']:
@@ -328,7 +337,7 @@ class InfoDecoder:
                 self.logger.info(f"    🔍 从Java源码获取类型: {field_name_raw} -> {java_type} -> {field_type_name} (rule: {rule})")
             else:
                 # Java源码分析失败，跳过这个字段
-                self.logger.warning(f"    ⚠️  无法获取字段 {field_name_raw} 的类型信息，跳过该字段")
+                self.logger.error(f"    ❌ 无法获取字段 {field_name_raw} 的类型信息，跳过该字段 - 这将导致proto文件不完整！")
                 continue
             
             # 特殊情况处理：根据字段名修正类型

@@ -53,6 +53,8 @@ class JavaSourceAnalyzer:
         self.java_parser = JavaParser()
         # 使用文件缓存系统优化I/O性能
         self.file_cache = get_file_cache()
+        # 初始化logger
+        self.logger = get_logger("java_source_analyzer")
     
     def set_current_class(self, class_name: str):
         """设置当前分析的类"""
@@ -352,6 +354,67 @@ class JavaSourceAnalyzer:
                     package_name = '.'.join(self._current_class_name.split('.')[:-1])
                     return f"{package_name}.{simple_type}"
         
+        return None
+    
+    def _get_enum_type_from_converter(self, field_name: str) -> Optional[str]:
+        """
+        🆕 新增：从转换器声明中获取枚举类型（兼容包含$符号的类型）
+        
+        通过分析类似这样的转换器声明来获取真正的枚举类型：
+        private static final Internal.ListAdapter.Converter<Integer, Models$ExtVerificationAppInstalled> extVerificationAppsInstalled_converter_ = new baz();
+        
+        Args:
+            field_name: 字段名（如 extVerificationAppsInstalled）
+            
+        Returns:
+            枚举类型名，如果找不到则返回None
+        """
+        if not self._current_class_content:
+            return None
+        
+        # 生成转换器变量名：extVerificationAppsInstalled -> extVerificationAppsInstalled_converter_
+        converter_name = f"{field_name}_converter_"
+        
+        # 查找转换器声明模式，支持包含$符号的类型名
+        # 匹配模式：Internal.ListAdapter.Converter<Integer, SomeType$WithDollar> fieldName_converter_
+        pattern = rf'Internal\.ListAdapter\.Converter<Integer,\s*([A-Za-z_$][A-Za-z0-9_.$]*)\s*>\s+{re.escape(converter_name)}'
+        
+        matches = re.findall(pattern, self._current_class_content)
+        
+        if matches:
+            enum_type = matches[0].strip()
+            self.logger.debug(f"    🎯 从转换器找到枚举类型: {field_name} -> {enum_type}")
+            
+            # 检查是否为简单类名（无包名），如果是则尝试补全包名
+            if '.' not in enum_type and '$' in enum_type:
+                # 处理内部类：Models$ExtVerificationAppInstalled -> com.package.Models$ExtVerificationAppInstalled
+                if self._current_class_name:
+                    package_name = '.'.join(self._current_class_name.split('.')[:-1])
+                    full_enum_type = f"{package_name}.{enum_type}"
+                    self.logger.debug(f"    📦 补全包名: {enum_type} -> {full_enum_type}")
+                    return full_enum_type
+            
+            return enum_type
+        
+        # 也尝试更宽松的匹配模式，处理可能的空格变化
+        pattern_loose = rf'Internal\.ListAdapter\.Converter\s*<\s*Integer\s*,\s*([A-Za-z_$][A-Za-z0-9_.$]*)\s*>\s+{re.escape(converter_name)}'
+        matches_loose = re.findall(pattern_loose, self._current_class_content)
+        
+        if matches_loose:
+            enum_type = matches_loose[0].strip()
+            self.logger.debug(f"    🎯 从转换器找到枚举类型（宽松匹配）: {field_name} -> {enum_type}")
+            
+            # 检查是否需要补全包名
+            if '.' not in enum_type and '$' in enum_type:
+                if self._current_class_name:
+                    package_name = '.'.join(self._current_class_name.split('.')[:-1])
+                    full_enum_type = f"{package_name}.{enum_type}"
+                    self.logger.debug(f"    📦 补全包名: {enum_type} -> {full_enum_type}")
+                    return full_enum_type
+            
+            return enum_type
+        
+        self.logger.debug(f"    ❌ 未找到转换器: {converter_name}")
         return None
     
     def _extract_constant_value(self, constant_name: str) -> Optional[int]:

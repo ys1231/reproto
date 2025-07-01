@@ -77,7 +77,7 @@ class FileContentCache:
                 
             except Exception as e:
                 self._stats['errors'] += 1
-                self.logger.warning(f"⚠️  读取文件失败 {file_path}: {e}")
+                self.logger.error(f"❌ 读取文件失败 {file_path}: {e} - 这将影响Java源码分析！")
                 return None
     
     def preload_files(self, file_paths: list[Path]) -> int:

@@ -382,7 +382,7 @@ class JavaParser:
         if best_match:
             self.logger.info(f"  ✅ 选择主类newMessageInfo，匹配分数: {best_score}")
         else:
-            self.logger.warning(f"  ⚠️  无法找到匹配的主类newMessageInfo")
+            self.logger.error(f"  ❌ 无法找到匹配的主类newMessageInfo - 这将导致protobuf字段解析失败！")
         
         return best_match
     
