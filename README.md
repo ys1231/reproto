@@ -49,6 +49,10 @@ reproto ./out_jadx/sources 'com.example.account.v1.Models$Onboarded' ./output
 
 # 详细输出
 reproto ./out_jadx/sources com.example.Model ./output --verbose
+
+# 编译
+## 生成 pyi 方便 IDE 索引 其他正常编译
+protoc --proto_path ./proto --pyi_out=./ ./proto/google/**/*.proto
 ```
 
 ### 代码使用
