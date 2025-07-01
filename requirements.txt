@@ -3,3 +3,4 @@
 loguru 
 # 使用 packaging 库来进行版本号比较
 packaging 
+protobuf

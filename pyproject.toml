@@ -38,6 +38,7 @@ packages = [
 python = ">=3.12,<4.0"
 loguru = ">=0.7.3"
 packaging = "^25.0"
+protobuf = "^6.31.1"
 
 [tool.poetry.scripts]
 reproto = "main:main"
