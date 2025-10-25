@@ -18,7 +18,7 @@
 ### 方式一：拉取代码
 ```bash
 # 克隆项目
-git clone <repository_url>
+git clone https://github.com/ys1231/reproto.git
 cd reproto
 
 # 安装依赖
