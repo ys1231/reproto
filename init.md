@@ -4,12 +4,6 @@
 - java源码目录: ../sources
 - 输出目录: ../out_proto
 
-## 测试java类
-- 'com.truecaller.accountonboarding.v1.Service$SendOnboardingOtpRequest' 测试成功
-- 'com.truecaller.accountonboarding.v1.Service$SendOnboardingOtpResponse' 测试成功
-- 'com.truecaller.accountonboarding.v1.Service$VerifyOnboardingOtpRequest' 测试成功
-- 'com.truecaller.accountonboarding.v1.Service$VerifyOnboardingOtpResponse' 测试失败
-
 ## 沟通约定
 - **语言**: 始终使用中文进行沟通和交流
 - **问题反馈**: 提供详细的日志文件和错误信息便于分析
