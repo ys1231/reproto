@@ -1,3 +1,5 @@
+
+
 # [reproto](https://github.com/ys1231/reproto)
 
 🔧 **从JADX反编译的Java源码自动重构Protobuf .proto文件**
@@ -22,7 +24,7 @@ git clone https://github.com/ys1231/reproto.git
 cd reproto
 
 # 安装依赖
-pip install -r requirements.txt
+poetry install
 ```
 
 ### 方式二：pip安装
